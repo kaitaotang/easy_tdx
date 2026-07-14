@@ -105,6 +105,48 @@ export async function fetchBars(
     return bars
 }
 
+/**
+ * 按扩展市场标的取 K 线行情（美股/港股等）。
+ * 走后端 /ex/bars 接口，单次最多 700 根，自动翻页拼接。
+ */
+export async function fetchExBars(
+  exMarket: string,
+  code: string,
+  category: Category,
+  startDate?: string,
+  endDate?: string,
+): Promise<Bar[]> {
+  let allBars: Bar[] = []
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const params = new URLSearchParams({
+      market: exMarket,
+      code,
+      category,
+      count: '700',
+      start: String(page * 700),
+    })
+    const resp = await fetch(`${BASE}/ex/bars?${params}`)
+    if (!resp.ok) await throwError(resp)
+    const body = (await resp.json()) as { data: Record<string, unknown>[] }
+    const pageBars = body.data.map((row) => normalizeBar(row))
+    if (pageBars.length === 0) break
+
+    allBars = allBars.concat(pageBars)
+
+    if (startDate && pageBars.length > 0) {
+      const oldest = pageBars[pageBars.length - 1].datetime.slice(0, 10)
+      if (oldest <= startDate) break
+    }
+    if (pageBars.length < 700) break
+  }
+
+  let bars = allBars
+  if (startDate) bars = bars.filter((b) => b.datetime.slice(0, 10) >= startDate)
+  if (endDate) bars = bars.filter((b) => b.datetime.slice(0, 10) <= endDate)
+  bars.sort((a, b) => a.datetime.localeCompare(b.datetime))
+  return bars
+}
+
 /** 把后端 bars 的单条记录归一化为统一 Bar（datetime 字段）。 */
 function normalizeBar(row: Record<string, unknown>): Bar {
   const raw = (row.datetime ?? row.date) as string | undefined

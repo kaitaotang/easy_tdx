@@ -1,8 +1,35 @@
 // A股代码 → 市场智能识别。
 // 用户只输入 6 位代码，按代码段规则自动匹配 沪市(SH)/深市(SZ)/北交所(BJ)，
 // 拼成后端要求的 "市场:代码" 格式（如 SZ:000001）。
+// 美股/港股等扩展市场用字母代码（如 SPY/QQQ），走 /ex/bars 接口。
 
 export type Market = 'SH' | 'SZ' | 'BJ'
+
+/** 扩展市场标识，对应后端 ExMarket 枚举名。 */
+export type ExMarket = 'US_STOCK' | 'HK_MAIN_BOARD'
+
+/**
+ * 判断代码是否为扩展市场（美股/港股）。
+ * 美股代码为 1-5 位字母（如 SPY/QQQ/AAPL），港股代码为 5 位数字。
+ * A 股代码为 6 位数字。
+ */
+export function isExMarketCode(code: string): boolean {
+  const c = code.trim()
+  // 美股：纯字母，1-5 位
+  if (/^[A-Za-z]{1,5}$/.test(c)) return true
+  // 港股：5 位纯数字（与 A 股 6 位区分）
+  if (/^\d{5}$/.test(c)) return true
+  return false
+}
+
+/**
+ * 检测扩展市场类型（仅当 isExMarketCode 返回 true 时调用）。
+ */
+export function detectExMarket(code: string): ExMarket {
+  const c = code.trim()
+  if (/^[A-Za-z]{1,5}$/.test(c)) return 'US_STOCK'
+  return 'HK_MAIN_BOARD'
+}
 
 /**
  * 根据 6 位股票代码智能判断所属市场。
@@ -38,12 +65,16 @@ export function toSymbol(code: string): string {
 }
 
 /** 市场中文显示名。 */
-export function marketLabel(market: Market): string {
+export function marketLabel(market: Market | ExMarket): string {
   switch (market) {
     case 'SH':
       return '沪市'
     case 'BJ':
       return '北交所'
+    case 'US_STOCK':
+      return '美股'
+    case 'HK_MAIN_BOARD':
+      return '港股'
     default:
       return '深市'
   }

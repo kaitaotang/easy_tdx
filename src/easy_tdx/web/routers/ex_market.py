@@ -34,15 +34,32 @@ async def ex_bars(
     count: int = Query(700, ge=1, le=700),
     client: Any = Depends(get_ex_client),
 ) -> DataFrameResponse:
-    """获取扩展市场 K 线数据。"""
-    records = await client.get_instrument_bars(
-        category=int(category_from_str(category)),
+    """获取扩展市场 K 线数据（走 MAC 协议客户端，支持美股/港股/期货）。"""
+    from easy_tdx.mac.enums import Period
+
+    # 前端 category (DAY/WEEK/MONTH/MIN_5/...) → MAC Period 枚举
+    _PERIOD_MAP = {
+        "DAY": Period.DAILY,
+        "WEEK": Period.WEEKLY,
+        "MONTH": Period.MONTHLY,
+        "MIN_5": Period.MIN_5,
+        "MIN_15": Period.MIN_15,
+        "MIN_30": Period.MIN_30,
+        "MIN_60": Period.MIN_60,
+        "MIN_1": Period.MIN_1,
+    }
+    period = _PERIOD_MAP.get(category.upper(), Period.DAILY)
+
+    df = await client.goods_kline(
         market=ex_market_from_str(market),
         code=code,
+        period=period,
         start=start,
         count=count,
     )
-    return _records_to_df_resp(records)
+    if df is None or df.empty:
+        return DataFrameResponse(data=[], count=0)
+    return DataFrameResponse.from_dataframe(df)
 
 
 @router.get("/ex/quote", response_model=DataFrameResponse)

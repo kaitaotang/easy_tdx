@@ -6,10 +6,10 @@
 
 import { computed, ref } from 'vue'
 
-import { fetchBars, formatError } from '../api'
-import { detectMarket, marketLabel } from '../market'
+import { fetchBars, fetchExBars, formatError } from '../api'
+import { detectMarket, detectExMarket, isExMarketCode, marketLabel } from '../market'
 import { useBacktestStore } from '../stores/backtest'
-import type { Category } from '../types'
+import type { Bar, Category } from '../types'
 
 const store = useBacktestStore()
 
@@ -37,16 +37,21 @@ const loading = ref(false)
 const CATEGORIES: Category[] = ['DAY', 'WEEK', 'MONTH', 'MIN_5', 'MIN_15', 'MIN_30', 'MIN_60']
 
 // 智能识别的市场（用于提示展示）
-const detectedMarket = computed(() => (code.value && /^\d{6}$/.test(code.value)
-  ? marketLabel(detectMarket(code.value))
-  : ''))
+const detectedMarket = computed(() => {
+  const c = code.value?.trim()
+  if (!c) return ''
+  if (isExMarketCode(c)) return marketLabel(detectExMarket(c))
+  if (/^\d{6}$/.test(c)) return marketLabel(detectMarket(c))
+  return ''
+})
 
 /** 取行情（由父组件在点击「开始回测/开始寻优」时调用）。
  * 成功返回 true，失败返回 false（并把错误写入 store.error 供父组件感知）。 */
 async function loadBars(): Promise<boolean> {
-  // 基本校验
-  if (!/^\d{6}$/.test(code.value)) {
-    error.value = '股票代码必须是 6 位数字'
+  const c = code.value.trim()
+  // 基本校验：6位数字(A股) 或 1-5位字母(美股) 或 5位数字(港股)
+  if (!/^\d{6}$/.test(c) && !/^[A-Za-z]{1,5}$/.test(c) && !/^\d{5}$/.test(c)) {
+    error.value = '代码格式无效：A股为6位数字，美股为1-5位字母（如SPY），港股为5位数字'
     store.error = error.value
     return false
   }
@@ -59,21 +64,40 @@ async function loadBars(): Promise<boolean> {
   loading.value = true
   error.value = ''
   try {
-    const market = detectMarket(code.value)
-    const bars = await fetchBars(
-      market,
-      code.value,
-      category.value,
-      startDate.value,
-      endDate.value,
-    )
+    let bars: Bar[]
+    let sourceLabel: string
+    const range = `${startDate.value} ~ ${endDate.value}`
+
+    if (isExMarketCode(c)) {
+      // 美股/港股走扩展市场接口
+      const exMarket = detectExMarket(c)
+      bars = await fetchExBars(
+        exMarket,
+        c.toUpperCase(),
+        category.value,
+        startDate.value,
+        endDate.value,
+      )
+      sourceLabel = `${exMarket}:${c.toUpperCase()} ${category.value} ${range}`
+    } else {
+      // A股走标准接口
+      const market = detectMarket(c)
+      bars = await fetchBars(
+        market,
+        c,
+        category.value,
+        startDate.value,
+        endDate.value,
+      )
+      sourceLabel = `${market}:${c} ${category.value} ${range}`
+    }
+
     if (bars.length < 2) {
       error.value = `该日期范围内仅取到 ${bars.length} 根 K 线，不足以回测`
       store.error = error.value
       return false
     }
-    const range = `${startDate.value} ~ ${endDate.value}`
-    store.setOhlcv(bars, `${market}:${code.value} ${category.value} ${range}`)
+    store.setOhlcv(bars, sourceLabel)
     store.clearResult()
     return true
   } catch (e) {
@@ -95,8 +119,8 @@ defineExpose({ loadBars, loading })
       <label>代码</label>
       <input
         v-model="code"
-        maxlength="6"
-        placeholder="6位代码（市场自动识别）"
+        maxlength="10"
+        placeholder="A股6位数字 / 美股字母(如SPY) / 港股5位数字"
       />
       <span v-if="detectedMarket" class="market-tag">{{ detectedMarket }}</span>
     </div>

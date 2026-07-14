@@ -68,6 +68,12 @@ pip install -e ".[dev]"
 # 开发 Web API 模式（含 FastAPI + Uvicorn）
 pip install -e ".[web]"
 ```
+## 使用
+
+# 先 Ctrl+C 停掉旧的 serve
+source ~/.local/share/miniconda3/etc/profile.d/conda.sh
+conda activate easy-tdx
+easy-tdx serve --port 8010 --ex
 
 ## CLI 参考
 

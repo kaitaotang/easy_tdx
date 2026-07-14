@@ -15,6 +15,11 @@ import click
 @click.option("--tdx-port", default=None, type=int, help="TDX 服务器端口")
 @click.option("--reload", is_flag=True, help="开发模式（自动重载）")
 @click.option(
+    "--ex",
+    is_flag=True,
+    help="启用扩展市场客户端（美股/港股/期货，端口 7727），浏览器可回测 SPY/QQQ 等",
+)
+@click.option(
     "--open-browser/--no-open-browser",
     default=True,
     help="启动后自动打开浏览器（默认开启，PyInstaller 打包后老人双击即用）",
@@ -25,6 +30,7 @@ def serve(
     tdx_host: str | None,
     tdx_port: int | None,
     reload: bool,
+    ex: bool,
     open_browser: bool,
 ) -> None:
     """启动 Web API 服务器（需要安装 easy-tdx[web]）。"""
@@ -57,5 +63,5 @@ def serve(
     else:
         from easy_tdx.web import create_app
 
-        app = create_app(host=tdx_host, port=tdx_port)
+        app = create_app(host=tdx_host, port=tdx_port, enable_ex=ex)
         uvicorn.run(app, host=host, port=port)

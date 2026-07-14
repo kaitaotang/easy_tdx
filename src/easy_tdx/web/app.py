@@ -100,11 +100,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     enable_ex = getattr(app.state, "enable_ex", False)
     if enable_ex:
         try:
-            from easy_tdx.ex.client import AsyncExTdxClient
+            from easy_tdx.ex.mac_client import AsyncMacExClient
 
-            ex_client = AsyncExTdxClient.from_best_host()
+            ex_client = AsyncMacExClient.from_best_host()
             await ex_client.connect()
-            logger.info("Ex market client connected")
+            logger.info("Ex market client (MAC) connected to %s", ex_client._host)
         except Exception:
             logger.warning("Ex market client connection failed — Ex endpoints will return 503")
             ex_client = None

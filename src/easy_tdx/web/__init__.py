@@ -24,6 +24,8 @@ def create_app(
     host: str | None = None,
     port: int | None = None,
     timeout: float | None = None,
+    *,
+    enable_ex: bool = False,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -31,13 +33,14 @@ def create_app(
         host: TDX server host (None = auto-detect best host).
         port: TDX server port (None = default 7709).
         timeout: Connection timeout in seconds.
+        enable_ex: 启用扩展市场客户端（美股/港股/期货，端口 7727）。
 
     Returns:
         Configured FastAPI application instance.
     """
     from easy_tdx.web.app import _create_app
 
-    return _create_app(host=host, port=port, timeout=timeout)
+    return _create_app(host=host, port=port, timeout=timeout, enable_ex=enable_ex)
 
 
 def app_factory() -> FastAPI:
