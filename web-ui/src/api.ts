@@ -2,7 +2,6 @@
 // 开发期通过 vite proxy 走 /api（同源），生产期由 FastAPI 同源托管。
 
 import type {
-  ApiError,
   BacktestRequest,
   BacktestResult,
   Bar,
@@ -37,8 +36,26 @@ export function formatError(e: unknown): string {
 async function throwError(resp: Response): Promise<never> {
   let detail = `${resp.status} ${resp.statusText}`
   try {
-    const body = (await resp.json()) as ApiError
-    if (body?.detail) detail = body.detail
+    const body = (await resp.json()) as { detail?: unknown }
+    if (body?.detail) {
+      if (typeof body.detail === 'string') {
+        detail = body.detail
+      } else if (Array.isArray(body.detail)) {
+        // FastAPI/Pydantic 422 的 detail 是对象数组；直接插值会显示
+        // "[object Object]"，把字段位置和校验信息展开给用户。
+        detail = body.detail
+          .map((item: unknown) => {
+            if (!item || typeof item !== 'object') return String(item)
+            const error = item as { loc?: unknown; msg?: unknown }
+            const loc = Array.isArray(error.loc) ? error.loc.join('.') : ''
+            const msg = typeof error.msg === 'string' ? error.msg : JSON.stringify(item)
+            return loc ? `${loc}: ${msg}` : msg
+          })
+          .join('；')
+      } else {
+        detail = JSON.stringify(body.detail)
+      }
+    }
   } catch {
     // 非 JSON 错误体，用 statusText
   }
@@ -50,28 +67,6 @@ export async function fetchStrategies(): Promise<StrategiesResponse> {
   const resp = await fetch(`${BASE}/backtest/strategies`)
   if (!resp.ok) await throwError(resp)
   return (await resp.json()) as StrategiesResponse
-}
-
-/**
- * 查询 A 股证券中文名（走 /quotes 实时五档接口，取返回的 name 字段）。
- * 用于回测页"已加载"那行展示"贵州茅台"之类的名称。
- * 失败时返回空字符串（不阻塞主流程）。
- */
-export async function fetchSecurityName(market: string, code: string): Promise<string> {
-  try {
-    const resp = await fetch(`${BASE}/quotes`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ stocks: [{ market, code }] }),
-    })
-    if (!resp.ok) return ''
-    const body = (await resp.json()) as { data: Record<string, unknown>[] }
-    if (!body.data || body.data.length === 0) return ''
-    const name = body.data[0].name
-    return typeof name === 'string' ? name : ''
-  } catch {
-    return ''
-  }
 }
 
 /**

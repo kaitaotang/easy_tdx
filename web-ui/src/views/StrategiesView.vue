@@ -3,15 +3,14 @@
 // 以及「组合回测」——勾选多个策略，各拿 1/N 资金、各跑原标的，看综合表现。
 // 数据来自后端 SQLite（GET /api/v1/strategies）。空态提示去回测页保存。
 
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import EquityChart from '../components/EquityChart.vue'
 import GradeDetails from '../components/GradeDetails.vue'
-import KlineChart from '../components/KlineChart.vue'
 import MetricTable from '../components/MetricTable.vue'
 import PortfolioCompareChart from '../components/PortfolioCompareChart.vue'
-import TradeTable from '../components/TradeTable.vue'
+import PortfolioSummaryTable from '../components/PortfolioSummaryTable.vue'
 import {
   deleteSavedStrategy,
   fetchSavedStrategies,
@@ -19,8 +18,8 @@ import {
   saveStrategy,
 } from '../api'
 import { gradePortfolio } from '../grading'
-import { detectMarket } from '../market'
-import type { MultiStrategyItem, Performance, SavedStrategy, Trade } from '../types'
+import { detectExMarket, detectMarket, isExMarketCode } from '../market'
+import type { MultiStrategyItem, Performance, SavedStrategy } from '../types'
 import { useBacktestStore } from '../stores/backtest'
 
 const router = useRouter()
@@ -59,9 +58,19 @@ const saveComboLoading = ref(false)
 // 最近一次组合回测使用的 items（保存时复用），由 onComboBacktest 写入
 const lastComboItems = ref<MultiStrategyItem[]>([])
 const lastComboCash = ref<number>(1_000_000)
-const historyTradesRef = ref<HTMLElement | null>(null)
+// 结果区引用：跑完后滚动定位
+const comboResultRef = ref<HTMLElement | null>(null)
 // 保存弹窗里名称输入框：打开时自动聚焦
 const saveComboNameRef = ref<HTMLInputElement | null>(null)
+
+// 组合结果由 Pinia 保留，但当前页面组件可能被重新创建；优先使用本页刚跑的
+// 明细，页面重建时回退到 store 中随回测请求保存的明细。
+const comboItemsForSave = computed(() =>
+  lastComboItems.value.length > 0 ? lastComboItems.value : store.multiStrategyItems,
+)
+const comboCashForSave = computed(() =>
+  lastComboItems.value.length > 0 ? lastComboCash.value : store.multiStrategyCash,
+)
 
 // ── 多策略组合回测：勾选 ─────────────────────────────────────────────────────
 const selectedIds = ref<Set<string>>(new Set())
@@ -82,14 +91,36 @@ function clearSelection() {
 }
 
 /** 纠正历史保存策略的市场前缀。
- *  早期 BacktestView.fullSymbol 硬编码市场判断（漏判 5 开头的沪市基金/ETF），
- *  导致部分历史保存的策略 symbol 被错标（如 SZ:515030，应为 SH:515030），
+ *  早期保存逻辑只按 A 股判断，导致 ETF 或美股 symbol 被错标，
  *  后端按错配市场取到 0 根 K 线被静默跳过。
- *  这里在发请求前用 detectMarket 重算前缀，纠正历史数据 + 兜底未来。 */
+ *  这里在发请求前统一规范 A 股/美股/港股前缀，纠正历史数据 + 兜底未来。 */
 function normalizeSymbol(raw: string): string {
-  if (!raw) return raw
-  const code = raw.includes(':') ? raw.split(':').pop()! : raw
-  return `${detectMarket(code)}:${code}`
+  const value = raw.trim()
+  if (!value) return value
+
+  // 已带市场前缀的历史记录必须原样保留扩展市场；否则 US_STOCK:AAPL
+  // 会被误改成 SZ:AAPL，直接触发后端 422。
+  const colon = value.indexOf(':')
+  if (colon > 0) {
+    const market = value.slice(0, colon).toUpperCase()
+    const code = value.slice(colon + 1).trim()
+    if (market === 'US_STOCK') return `US_STOCK:${code.toUpperCase()}`
+    if (market === 'HK_MAIN_BOARD') return `HK_MAIN_BOARD:${code}`
+    if (market === 'SH' || market === 'SZ' || market === 'BJ') {
+      // 早期版本曾把扩展市场代码错误保存成 SZ:QQQ / SZ:00700。
+      // 根据代码形态纠正这类历史记录，避免组合请求被 422 拒绝。
+      if (/^[A-Za-z]{1,5}$/.test(code)) return `US_STOCK:${code.toUpperCase()}`
+      if (/^\d{5}$/.test(code)) return `HK_MAIN_BOARD:${code}`
+      return `${market}:${code}`
+    }
+  }
+
+  // 没有前缀时兼容扩展市场代码（如 AAPL / 00700）和 A 股 6 位代码。
+  if (isExMarketCode(value)) {
+    const market = detectExMarket(value)
+    return `${market}:${market === 'US_STOCK' ? value.toUpperCase() : value}`
+  }
+  return `${detectMarket(value)}:${value}`
 }
 
 /** 组合回测：把勾选的策略组装成 MultiStrategyItem[]，各跑原标的，资金均分。 */
@@ -125,7 +156,12 @@ async function onComboBacktest() {
 /** 打开保存组合弹窗：预填名称 + 自动聚焦输入框。 */
 function openSaveCombo() {
   if (!store.multiStrategyResult) return
-  saveComboName.value = `组合·${lastComboItems.value.length}策略·${new Date().toISOString().slice(0, 10)}`
+  const itemCount = comboItemsForSave.value.length
+  if (itemCount === 0) {
+    error.value = '无法保存：组合策略明细已丢失，请重新勾选策略并运行组合回测。'
+    return
+  }
+  saveComboName.value = `组合·${itemCount}策略·${new Date().toISOString().slice(0, 10)}`
   saveComboNotes.value = ''
   saveComboOpen.value = true
   // 等弹窗渲染完再聚焦
@@ -139,7 +175,12 @@ function closeSaveCombo() {
 
 /** 提交保存组合：把 items + cash 存进 context，组合级绩效存 snapshot。 */
 async function submitSaveCombo() {
-  if (!store.multiStrategyResult || lastComboItems.value.length === 0) return
+  if (!store.multiStrategyResult) return
+  if (comboItemsForSave.value.length === 0) {
+    error.value = '无法保存：组合策略明细已丢失，请重新勾选策略并运行组合回测。'
+    saveComboOpen.value = false
+    return
+  }
   if (!saveComboName.value.trim()) {
     error.value = '请填写组合名称'
     return
@@ -152,12 +193,12 @@ async function submitSaveCombo() {
       name: saveComboName.value.trim(),
       kind: 'multi',
       strategy: 'multi',
-      strategy_label: `${lastComboItems.value.length} 策略组合`,
+      strategy_label: `${comboItemsForSave.value.length} 策略组合`,
       context: {
-        items: lastComboItems.value,
-        cash: lastComboCash.value,
+        items: comboItemsForSave.value,
+        cash: comboCashForSave.value,
       },
-      trade_config: { cash: lastComboCash.value },
+      trade_config: { cash: comboCashForSave.value },
       snapshot: {
         total_return: tp.total_return,
         annual_return: tp.annual_return,
@@ -213,9 +254,9 @@ async function onLoadMulti(s: SavedStrategy) {
   lastComboItems.value = items
   lastComboCash.value = cash
   await store.runMultiStrategy({ items, cash })
-  // 跑完直接定位历史买卖点，避免它被前面的长绩效区块藏在几屏之后。
+  // 跑完滚动到结果区
   await nextTick()
-  historyTradesRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  comboResultRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 onMounted(load)
@@ -302,9 +343,7 @@ function ctxLabel(s: SavedStrategy): string {
     const stocks = Array.isArray(ctx.stocks) ? (ctx.stocks as string[]) : []
     return stocks.length ? `${stocks.length} 只：${stocks.slice(0, 3).join(' ')}${stocks.length > 3 ? ' …' : ''}` : '-'
   }
-  const sym = (ctx.symbol as string) || ''
-  const name = (ctx.symbol_name as string) || ''
-  return name ? `${sym} · ${name}` : (sym || '-')
+  return (ctx.symbol as string) || '-'
 }
 function dateRange(s: SavedStrategy): string {
   const ctx = s.context
@@ -323,7 +362,7 @@ function createdShort(s: SavedStrategy): string {
 // size > 0 表示该策略结束仍持有，size ≈ 0 表示已清仓。
 
 interface Holding {
-  key: string // 标的，如 "SH:601088"
+  key: string // 策略槽位 key，如 "双均线交叉@SH:601088"
   strategyLabel: string
   symbol: string
   size: number // 持仓数量（0 = 已清仓）
@@ -337,13 +376,7 @@ interface Holding {
 const holdings = computed<Holding[]>(() => {
   const res = store.multiStrategyResult
   if (!res) return []
-  const grouped = new Map<string, {
-    labels: string[]
-    size: number
-    totalCost: number
-    marketValue: number
-    unrealizedPnl: number
-  }>()
+  const out: Holding[] = []
   for (const [key, br] of Object.entries(res.individual_results)) {
     const positions = br.positions as Array<Record<string, unknown>>
     if (!Array.isArray(positions) || positions.length === 0) continue
@@ -353,151 +386,22 @@ const holdings = computed<Holding[]>(() => {
     const marketValue = Number(last.market_value ?? 0)
     const unrealizedPnl = Number(last.unrealized_pnl ?? 0)
     const [strategyLabel, symbol] = key.split('@')
-    const symbolKey = symbol || key
-    const current = grouped.get(symbolKey) || {
-      labels: [], size: 0, totalCost: 0, marketValue: 0, unrealizedPnl: 0,
-    }
-    current.labels.push(strategyLabel || key)
-    current.size += size
-    current.totalCost += avgPrice * Math.abs(size)
-    current.marketValue += marketValue
-    current.unrealizedPnl += unrealizedPnl
-    grouped.set(symbolKey, current)
-  }
-  return Array.from(grouped.entries()).map(([symbol, item]) => {
-    const avgPrice = item.size !== 0 ? item.totalCost / Math.abs(item.size) : 0
-    return {
-      key: symbol,
-      strategyLabel: item.labels.length === 1 ? item.labels[0] : `${item.labels.length} 策略`,
-      symbol,
-      size: item.size,
+    out.push({
+      key,
+      strategyLabel: strategyLabel || key,
+      symbol: symbol || '',
+      size,
       avgPrice,
-      marketValue: item.marketValue,
-      unrealizedPnl: item.unrealizedPnl,
-      unrealizedPct: item.totalCost > 0 ? item.unrealizedPnl / item.totalCost : 0,
-      holding: item.size > 0.5,
-    }
-  })
+      marketValue,
+      unrealizedPnl,
+      unrealizedPct: avgPrice > 0 ? unrealizedPnl / (avgPrice * Math.abs(size)) : 0,
+      holding: size > 0.5, // 容忍浮点误差
+    })
+  }
+  return out
 })
 
 const holdingCount = computed(() => holdings.value.filter((h) => h.holding).length)
-
-// 组合历史买卖点。后端一直在 individual_results[*].trades 中返回完整成交，
-// 这里按策略分组展示，避免“重跑到今天”后只能看到最终持仓、看不到过程。
-const strategyTradeResults = computed(() => {
-  const results = store.multiStrategyResult?.individual_results || {}
-  return Object.entries(results).map(([key, result]) => ({
-    key,
-    trades: Array.isArray(result.trades) ? result.trades : [],
-    bars: Array.isArray(result.bars) ? result.bars : [],
-  }))
-})
-
-const totalTradeCount = computed(() =>
-  strategyTradeResults.value.reduce((sum, item) => sum + item.trades.length, 0),
-)
-
-interface CombinedTradeRow extends Trade {
-  key: string
-  strategy: string
-  symbol: string
-  amount: number
-}
-
-const combinedTradeRows = computed<CombinedTradeRow[]>(() => {
-  const rows = strategyTradeResults.value.flatMap((item) => {
-    const at = item.key.lastIndexOf('@')
-    const strategy = at >= 0 ? item.key.slice(0, at) : item.key
-    const symbol = at >= 0 ? item.key.slice(at + 1) : ''
-    return item.trades.map((trade, index) => ({
-      ...trade,
-      key: `${item.key}-${trade.datetime}-${index}`,
-      strategy,
-      symbol,
-      amount: trade.size * trade.price,
-    }))
-  })
-  return rows.sort((a, b) => b.datetime.localeCompare(a.datetime))
-})
-
-const strategyStates = computed(() => {
-  const results = store.multiStrategyResult?.individual_results || {}
-  return Object.entries(results).map(([key, result]) => {
-    const positions = Array.isArray(result.positions) ? result.positions : []
-    const lastPosition = positions[positions.length - 1] || {}
-    const trades = Array.isArray(result.trades) ? result.trades.filter((t) => !t.rejected) : []
-    const lastTrade = trades[trades.length - 1]
-    const at = key.lastIndexOf('@')
-    return {
-      key,
-      strategy: at >= 0 ? key.slice(0, at) : key,
-      symbol: at >= 0 ? key.slice(at + 1) : '',
-      holding: Number(lastPosition.size ?? 0) > 0.5,
-      size: Number(lastPosition.size ?? 0),
-      lastTrade,
-    }
-  })
-})
-
-function tradeDirectionLabel(direction: Trade['direction']): string {
-  return direction === 'BUY' ? '买入' : '卖出'
-}
-
-function tradeDate(datetime: string): string {
-  return datetime.slice(0, 10)
-}
-
-// 同一标的可能挂多套策略。组合概览按标的合成一行，具体策略差异留在
-// 下方净值曲线和历史买卖点中展开。
-const symbolSummaries = computed(() => {
-  const result = store.multiStrategyResult
-  if (!result) return []
-  const grouped = new Map<string, {
-    labels: string[]
-    allocation: number
-    weightedReturn: number
-    trades: number
-    winTrades: number
-  }>()
-  for (const [key, item] of Object.entries(result.individual_results)) {
-    const at = key.lastIndexOf('@')
-    const label = at >= 0 ? key.slice(0, at) : key
-    const symbol = at >= 0 ? key.slice(at + 1) : key
-    const allocation = result.equity_allocation[key] || 0
-    const current = grouped.get(symbol) || {
-      labels: [], allocation: 0, weightedReturn: 0, trades: 0, winTrades: 0,
-    }
-    current.labels.push(label)
-    current.allocation += allocation
-    current.weightedReturn += item.performance.total_return * allocation
-    current.trades += item.performance.total_trades
-    current.winTrades += item.performance.win_trades
-    grouped.set(symbol, current)
-  }
-  return Array.from(grouped.entries()).map(([symbol, item]) => ({
-    symbol,
-    strategies: item.labels.join(' + '),
-    strategyCount: item.labels.length,
-    allocation: item.allocation,
-    totalReturn: item.allocation > 0 ? item.weightedReturn / item.allocation : 0,
-    trades: item.trades,
-    winRate: item.trades > 0 ? item.winTrades / item.trades : 0,
-  }))
-})
-
-const expandedTradeKeys = ref<Set<string>>(new Set())
-
-watch(strategyTradeResults, (items) => {
-  expandedTradeKeys.value = new Set(items.length > 0 ? [items[0].key] : [])
-})
-
-function onTradeGroupToggle(event: Event, key: string) {
-  const details = event.currentTarget as HTMLDetailsElement
-  const next = new Set(expandedTradeKeys.value)
-  if (details.open) next.add(key)
-  else next.delete(key)
-  expandedTradeKeys.value = next
-}
 
 // 持仓三态视图：把 statusClass / label / rowClass 一次性算好，模板只读不调函数。
 // 否则每行 ×3 次函数调用 + holdingRowClass 返回新对象会触发 Vue 额外跟踪。
@@ -724,7 +628,7 @@ const comboGrade = computed(() =>
       >
         <h3 id="combo-modal-title">保存为策略组合</h3>
         <p class="modal-desc">
-          将当前 {{ lastComboItems.length }} 个策略的整体配置（策略+参数+标的+资金配比）存为「组合」，
+          将当前 {{ comboItemsForSave.length }} 个策略的整体配置（策略+参数+标的+资金配比）存为「组合」，
           下次点「↻ 重跑到今天」即可用截至今天的行情算出每个策略的当前信号（持仓/空仓）。
         </p>
         <div class="modal-field">
@@ -747,6 +651,7 @@ const comboGrade = computed(() =>
             maxlength="2000"
           />
         </div>
+        <p v-if="error" class="modal-error">⚠ {{ error }}</p>
         <div class="modal-actions">
           <button class="ghost sm" @click="closeSaveCombo">取消</button>
           <button class="primary sm" :disabled="saveComboLoading" @click="submitSaveCombo">
@@ -759,6 +664,7 @@ const comboGrade = computed(() =>
     <!-- 多策略组合回测结果（复用组合页图表组件） -->
     <section
       v-if="store.multiStrategyResult || store.multiStrategyRunning"
+      ref="comboResultRef"
       class="combo-result"
     >
       <h3 class="combo-title">
@@ -815,146 +721,12 @@ const comboGrade = computed(() =>
           <MetricTable :perf="comboPerf" />
         </div>
 
-        <div ref="historyTradesRef" class="combo-chart-block history-trades-block">
-          <h4>
-            当前策略状态
-            <span class="holdings-hint">每个策略独立管理分配给它的资金</span>
-          </h4>
-
-          <table class="holdings-table strategy-state-table">
-            <thead>
-              <tr>
-                <th>策略</th>
-                <th>标的</th>
-                <th>当前状态</th>
-                <th>最近动作</th>
-                <th class="num">数量</th>
-                <th class="num">成交价</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="item in strategyStates" :key="item.key">
-                <td>{{ item.strategy }}</td>
-                <td class="sym">{{ item.symbol }}</td>
-                <td>
-                  <span class="status-tag" :class="item.holding ? 'win' : 'wait'">
-                    {{ item.holding ? '持有，等待卖点' : '空仓，等待买点' }}
-                  </span>
-                </td>
-                <td>
-                  <template v-if="item.lastTrade">
-                    {{ tradeDate(item.lastTrade.datetime) }}
-                    {{ tradeDirectionLabel(item.lastTrade.direction) }}
-                  </template>
-                  <template v-else>-</template>
-                </td>
-                <td class="num">{{ item.lastTrade ? item.lastTrade.size.toFixed(0) : '-' }}</td>
-                <td class="num">{{ item.lastTrade ? item.lastTrade.price.toFixed(3) : '-' }}</td>
-              </tr>
-            </tbody>
-          </table>
-
-          <h4 class="trade-history-title">
-            合并交易流水（{{ totalTradeCount }} 个买卖点）
-            <span class="holdings-hint">按日期倒序，清楚区分由哪套策略触发</span>
-          </h4>
-
-          <div class="warn-box disclaimer trade-model-note">
-            表中数量来自历史模拟仓位，不是今天的下单建议。组合将初始资金均分给各策略，
-            每套策略独立买卖；同一天方向相反时不能直接互相抵消。
-          </div>
-
-          <p v-if="totalTradeCount === 0" class="empty-text">本次回测没有产生买卖记录</p>
-          <div v-else class="combined-trades-wrap">
-            <table class="holdings-table combined-trades-table">
-              <thead>
-                <tr>
-                  <th>日期</th>
-                  <th>策略</th>
-                  <th>标的</th>
-                  <th>动作</th>
-                  <th class="num">数量</th>
-                  <th class="num">成交价</th>
-                  <th class="num">成交金额</th>
-                  <th class="num">平仓盈亏</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in combinedTradeRows" :key="row.key" :class="{ rejected: row.rejected }">
-                  <td>{{ tradeDate(row.datetime) }}</td>
-                  <td>{{ row.strategy }}</td>
-                  <td class="sym">{{ row.symbol }}</td>
-                  <td :class="row.direction === 'BUY' ? 'pos' : 'neg'">
-                    {{ tradeDirectionLabel(row.direction) }}
-                  </td>
-                  <td class="num">{{ row.size.toFixed(0) }}</td>
-                  <td class="num">{{ row.price.toFixed(3) }}</td>
-                  <td class="num">{{ row.amount.toFixed(2) }}</td>
-                  <td class="num" :class="{ pos: row.pnl > 0, neg: row.pnl < 0 }">
-                    {{ row.pnl === 0 ? '-' : row.pnl.toFixed(2) }}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <h4 class="strategy-chart-title">
-            分策略 K 线
-            <span class="holdings-hint">展开查看该策略自己的买卖标记</span>
-          </h4>
-          <div v-if="totalTradeCount > 0" class="strategy-trades">
-            <details
-              v-for="item in strategyTradeResults"
-              :key="item.key"
-              class="strategy-trade-group"
-              :open="expandedTradeKeys.has(item.key)"
-              @toggle="onTradeGroupToggle($event, item.key)"
-            >
-              <summary>
-                <span>{{ item.key }}</span>
-                <span class="trade-count">{{ item.trades.length }} 笔</span>
-              </summary>
-              <div v-if="expandedTradeKeys.has(item.key)">
-                <div v-if="item.bars.length" class="strategy-kline">
-                  <KlineChart :bars="item.bars" :trades="item.trades" :initial-zoom-start="0" />
-                </div>
-                <p v-else class="empty-text kline-missing">
-                  当前任务没有返回 K 线，仅显示成交明细。请刷新页面后重新运行。
-                </p>
-                <TradeTable :trades="item.trades" />
-              </div>
-            </details>
-          </div>
-        </div>
-
         <div class="combo-chart-block">
-          <h4>标的汇总</h4>
-          <table class="holdings-table symbol-summary-table">
-            <thead>
-              <tr>
-                <th>标的</th>
-                <th>策略组合</th>
-                <th class="num">策略数</th>
-                <th class="num">资金占比</th>
-                <th class="num">综合收益</th>
-                <th class="num">交易数</th>
-                <th class="num">综合胜率</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="item in symbolSummaries" :key="item.symbol">
-                <td class="sym">{{ item.symbol }}</td>
-                <td>{{ item.strategies }}</td>
-                <td class="num">{{ item.strategyCount }}</td>
-                <td class="num">{{ (item.allocation * 100).toFixed(2) }}%</td>
-                <td class="num" :class="item.totalReturn >= 0 ? 'pos' : 'neg'">
-                  {{ (item.totalReturn * 100).toFixed(2) }}%
-                </td>
-                <td class="num">{{ item.trades }}</td>
-                <td class="num">{{ (item.winRate * 100).toFixed(2) }}%</td>
-              </tr>
-            </tbody>
-          </table>
+          <h4>各策略绩效对比</h4>
+          <PortfolioSummaryTable
+            :results="store.multiStrategyResult.individual_results"
+            :allocation="store.multiStrategyResult.equity_allocation"
+          />
         </div>
 
         <div class="combo-chart-block">
@@ -966,7 +738,7 @@ const comboGrade = computed(() =>
 
         <div class="combo-chart-block">
           <h4>
-            当前持仓（{{ holdingCount }}/{{ holdings.length }} 个标的在持仓中）
+            当前持仓（{{ holdingCount }}/{{ holdings.length }} 在持仓中）
             <span class="holdings-hint">截至回测结束日的策略信号</span>
           </h4>
 
@@ -1375,80 +1147,6 @@ const comboGrade = computed(() =>
   font-size: 13px;
   padding: 12px 0;
 }
-.strategy-trades {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.history-trades-block {
-  scroll-margin-top: 56px;
-}
-.trade-history-title,
-.strategy-chart-title {
-  margin-top: 20px;
-}
-.trade-model-note {
-  margin-bottom: 8px;
-}
-.combined-trades-wrap {
-  max-height: 440px;
-  overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-.combined-trades-table th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--bg-panel);
-}
-.combined-trades-table tr.rejected td {
-  opacity: 0.45;
-  text-decoration: line-through;
-}
-.kline-missing {
-  padding: 16px 12px;
-  border-top: 1px solid var(--border);
-}
-.symbol-summary-table td:nth-child(2) {
-  color: var(--text-muted);
-}
-.strategy-trade-group {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-.strategy-trade-group summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  color: var(--text-muted);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  background: var(--bg-panel);
-}
-.strategy-trade-group summary:hover {
-  background: var(--bg-hover);
-}
-.strategy-trade-group .trade-count {
-  flex: none;
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 400;
-}
-.strategy-kline {
-  border-top: 1px solid var(--border);
-  padding: 10px 6px 0;
-}
-.strategy-trade-group :deep(.trade-table-wrap) {
-  max-height: 360px;
-  border-top: 1px solid var(--border);
-  overflow: auto;
-}
 .holdings-table {
   width: 100%;
   border-collapse: collapse;
@@ -1635,5 +1333,11 @@ const comboGrade = computed(() =>
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+.modal-error {
+  color: var(--up);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 4px 0 0;
 }
 </style>

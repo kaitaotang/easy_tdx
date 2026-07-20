@@ -344,8 +344,11 @@ class MultiStrategyItem(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     symbol: str = Field(
         ...,
-        pattern=r"^(SZ|SH|BJ):\d{6}$",
-        description='标的完整代码，格式 "市场:6位代码"，如 "SH:601088"',
+        pattern=r"^(?:(?:SZ|SH|BJ):\d{6}|US_STOCK:[A-Za-z]{1,5}|HK_MAIN_BOARD:\d{5})$",
+        description=(
+            '标的完整代码，如 "SH:601088"、"US_STOCK:SCHD" 或 '
+            '"HK_MAIN_BOARD:00700"'
+        ),
     )
     category: Literal["DAY", "WEEK", "MONTH", "MIN_5", "MIN_15", "MIN_30", "MIN_60"] = Field(
         default="DAY"

@@ -6,8 +6,8 @@
 
 import { computed, ref } from 'vue'
 
-import { fetchBars, fetchExBars, fetchSecurityName, formatError } from '../api'
-import { detectMarket, detectExMarket, exMarketName, isExMarketCode, marketLabel } from '../market'
+import { fetchBars, fetchExBars, formatError } from '../api'
+import { detectMarket, detectExMarket, isExMarketCode, marketLabel } from '../market'
 import { useBacktestStore } from '../stores/backtest'
 import type { Bar, Category } from '../types'
 
@@ -33,8 +33,6 @@ const endDate = defineModel<string>('endDate', {
 const error = ref('')
 // loading 由父组件控制（回测/寻优时驱动），组件自身只暴露 loadBars
 const loading = ref(false)
-// 当前标的名称（A 股走 /quotes 实时接口；美股/港股走本地常用代码映射）
-const symbolName = ref('')
 
 const CATEGORIES: Category[] = ['DAY', 'WEEK', 'MONTH', 'MIN_5', 'MIN_15', 'MIN_30', 'MIN_60']
 
@@ -101,18 +99,6 @@ async function loadBars(): Promise<boolean> {
     }
     store.setOhlcv(bars, sourceLabel)
     store.clearResult()
-
-    // 异步取标的名称（不阻塞回测主流程）
-    if (isExMarketCode(c)) {
-      symbolName.value = exMarketName(c)
-    } else {
-      symbolName.value = '' // 先清空，避免显示上一个标的
-      fetchSecurityName(detectMarket(c), c).then((n) => {
-        // 防止竞态：用户已切到别的标的时不要覆盖
-        if (code.value.trim() === c) symbolName.value = n
-      })
-    }
-
     return true
   } catch (e) {
     error.value = formatError(e)
@@ -124,7 +110,7 @@ async function loadBars(): Promise<boolean> {
 }
 
 // 暴露给父组件（BacktestView / OptimizeView）在「开始回测/寻优」时串联调用
-defineExpose({ loadBars, loading, symbolName })
+defineExpose({ loadBars, loading })
 </script>
 
 <template>
@@ -160,7 +146,6 @@ defineExpose({ loadBars, loading, symbolName })
     <p v-if="error" class="err">{{ error }}</p>
     <p v-if="store.barsSource" class="ok">
       已加载：{{ store.barsSource }}（{{ store.ohlcv.length }} 根）
-      <span v-if="symbolName" class="symbol-name"> · {{ symbolName }}</span>
     </p>
   </div>
 </template>
@@ -192,9 +177,5 @@ defineExpose({ loadBars, loading, symbolName })
   color: var(--down);
   font-size: 12px;
   margin-top: 8px;
-}
-.symbol-name {
-  color: var(--text-muted);
-  font-weight: 600;
 }
 </style>

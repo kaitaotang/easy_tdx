@@ -20,6 +20,7 @@ import type {
   Bar,
   Category,
   MultiStrategyBacktestRequest,
+  MultiStrategyItem,
   PortfolioBacktestRequest,
   PortfolioResult,
   OptimizeAllBacktestRequest,
@@ -123,6 +124,10 @@ export const useBacktestStore = defineStore('backtest', () => {
   // ── 多策略组合回测（资金分仓） ─────────────────────────────────────────
   const multiStrategyResult = ref<PortfolioResult | null>(null)
   const multiStrategyRunning = ref(false)
+  // 保存组合时需要复用原始策略槽位（strategy + params + symbol）。
+  // 放在 store 而不是 view 局部状态，避免离开/重新进入 /strategies 后丢失。
+  const multiStrategyItems = ref<MultiStrategyItem[]>([])
+  const multiStrategyCash = ref(1_000_000)
 
   /** 提交多策略组合回测后台任务并轮询直到完成。
    * 结果结构同 PortfolioResult（复用组合页图表组件）。 */
@@ -130,6 +135,8 @@ export const useBacktestStore = defineStore('backtest', () => {
     multiStrategyRunning.value = true
     error.value = ''
     multiStrategyResult.value = null
+    multiStrategyItems.value = req.items
+    multiStrategyCash.value = req.cash ?? 1_000_000
     try {
       const { task_id } = await submitMultiStrategyTask(req)
       const start = Date.now()
@@ -156,6 +163,7 @@ export const useBacktestStore = defineStore('backtest', () => {
 
   function clearMultiStrategy() {
     multiStrategyResult.value = null
+    multiStrategyItems.value = []
     error.value = ''
   }
 
@@ -254,6 +262,8 @@ export const useBacktestStore = defineStore('backtest', () => {
     portfolioRunning,
     multiStrategyResult,
     multiStrategyRunning,
+    multiStrategyItems,
+    multiStrategyCash,
     optimizeResult,
     optimizeRunning,
     optimizeContext,

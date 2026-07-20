@@ -727,6 +727,65 @@ def test_portfolio_request_defaults():
     assert req.category == "DAY"
 
 
+def test_multi_strategy_item_accepts_extended_market_symbols():
+    """策略库组合请求应接受美股/港股完整代码。"""
+    from easy_tdx.web.backtest_schemas import MultiStrategyItem
+
+    us = MultiStrategyItem(strategy="ma_cross", symbol="US_STOCK:SCHD")
+    hk = MultiStrategyItem(strategy="ma_cross", symbol="HK_MAIN_BOARD:00700")
+    assert us.symbol == "US_STOCK:SCHD"
+    assert hk.symbol == "HK_MAIN_BOARD:00700"
+
+    with pytest.raises(ValueError):
+        MultiStrategyItem(strategy="ma_cross", symbol="SZ:SCHD")
+
+
+@pytest.mark.asyncio
+async def test_fetch_multi_strategy_bars_uses_extended_market_client():
+    """美股策略槽位必须走扩展市场客户端，不能误走 A 股客户端。"""
+    from easy_tdx.web.backtest_schemas import MultiStrategyItem
+    from easy_tdx.web.routers.backtest import _fetch_multi_strategy_bars
+
+    class StandardClient:
+        async def get_security_bars(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("美股不应调用标准 A 股行情接口")
+
+    class ExClient:
+        def __init__(self):
+            self.calls = []
+
+        async def goods_kline(self, **kwargs):  # noqa: ANN003
+            self.calls.append(kwargs)
+            n = 120
+            close = np.linspace(50.0, 60.0, n)
+            return pd.DataFrame(
+                {
+                    "datetime": pd.date_range("2024-01-01", periods=n, freq="B"),
+                    "open": close - 0.1,
+                    "high": close + 0.2,
+                    "low": close - 0.2,
+                    "close": close,
+                    "vol": np.full(n, 1000.0),
+                    "amount": close * 1000,
+                }
+            )
+
+    ex_client = ExClient()
+    item = MultiStrategyItem(
+        strategy="ma_cross",
+        params={"fast": 5, "slow": 20},
+        symbol="US_STOCK:SCHD",
+        category="DAY",
+    )
+
+    slots = await _fetch_multi_strategy_bars(StandardClient(), [item], ex_client)
+
+    assert len(slots) == 1
+    assert slots[0].symbol == "US_STOCK:SCHD"
+    assert ex_client.calls[0]["code"] == "SCHD"
+    assert ex_client.calls[0]["count"] == 700
+
+
 def test_portfolio_backtest_endpoint(client, monkeypatch):
     """POST /backtest/portfolio/run/async 端到端（mock 行情取数）。"""
     import pandas as pd

@@ -64,6 +64,19 @@ export function toSymbol(code: string): string {
   return `${detectMarket(code)}:${code.trim()}`
 }
 
+/**
+ * 把用户输入转成后端统一的 "市场:代码" 格式，兼容 A 股、美股和港股。
+ * 字母代码统一转大写，避免同一美股标的产生多种保存格式。
+ */
+export function toFullSymbol(code: string): string {
+  const c = code.trim()
+  if (isExMarketCode(c)) {
+    const normalized = /^[A-Za-z]+$/.test(c) ? c.toUpperCase() : c
+    return `${detectExMarket(c)}:${normalized}`
+  }
+  return toSymbol(c)
+}
+
 /** 市场中文显示名。 */
 export function marketLabel(market: Market | ExMarket): string {
   switch (market) {
@@ -78,88 +91,4 @@ export function marketLabel(market: Market | ExMarket): string {
     default:
       return '深市'
   }
-}
-
-/**
- * 常用美股/港股代码中文名映射（扩展市场行情接口不返回名称，
- * 用本地映射补全常见标的；未命中的返回代码本身）。
- */
-const EX_NAME_MAP: Record<string, string> = {
-  // 美股 ETF
-  SPY: '标普500 ETF',
-  QQQ: '纳指100 ETF',
-  DIA: '道指 ETF',
-  IWM: '罗素2000 ETF',
-  VTI: '全市场 ETF',
-  VOO: '标普500 ETF',
-  XLK: '科技 ETF',
-  XLF: '金融 ETF',
-  XLV: '医疗 ETF',
-  XLE: '能源 ETF',
-  XLY: '可选消费 ETF',
-  XLP: '必需消费 ETF',
-  XLI: '工业 ETF',
-  XLU: '公用事业 ETF',
-  XLB: '材料 ETF',
-  XLC: '通信 ETF',
-  XRE: '地产 ETF',
-  TLT: '20+年美债 ETF',
-  GLD: '黄金 ETF',
-  SLV: '白银 ETF',
-  USO: '原油 ETF',
-  // 美股个股（热门）
-  AAPL: '苹果',
-  MSFT: '微软',
-  GOOGL: '谷歌A',
-  GOOG: '谷歌C',
-  AMZN: '亚马逊',
-  META: 'Meta',
-  NVDA: '英伟达',
-  TSLA: '特斯拉',
-  BRK: '伯克希尔',
-  JPM: '摩根大通',
-  V: 'Visa',
-  JNJ: '强生',
-  WMT: '沃尔玛',
-  MA: '万事达',
-  PG: '宝洁',
-  UNH: '联合健康',
-  HD: '家得宝',
-  DIS: '迪士尼',
-  NFLX: '奈飞',
-  INTC: '英特尔',
-  AMD: 'AMD',
-  CRM: 'Salesforce',
-  ADBE: 'Adobe',
-  PEP: '百事',
-  KO: '可口可乐',
-  BABA: '阿里巴巴',
-  JD: '京东',
-  BIDU: '百度',
-  PDD: '拼多多',
-  NIO: '蔚来',
-  XPEV: '小鹏',
-  LI: '理想',
-  BILI: '哔哩哔哩',
-  // 港股（5位数字）
-  '00700': '腾讯',
-  '09988': '阿里巴巴',
-  '03690': '美团',
-  '01024': '快手',
-  '09888': '百度',
-  '09618': '京东',
-  '03888': '金山软件',
-  '00388': '港交所',
-  '00005': '汇丰',
-  '00941': '中国移动',
-  '00883': '中海油',
-  '01299': '友邦',
-  '02318': '中国平安',
-  '03988': '中国银行',
-  '00939': '建行',
-}
-
-/** 查询扩展市场代码的中文名，未命中返回大写的代码本身。 */
-export function exMarketName(code: string): string {
-  return EX_NAME_MAP[code.trim().toUpperCase()] || code.trim().toUpperCase()
 }

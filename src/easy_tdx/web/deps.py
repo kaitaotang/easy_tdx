@@ -42,3 +42,8 @@ def get_ex_client(request: Request) -> Any:
 
         raise TdxConnectionError("扩展市场客户端未启用")
     return client
+
+
+def get_optional_ex_client(request: Request) -> Any | None:
+    """返回可选扩展市场客户端，供混合市场接口按需使用。"""
+    return request.app.state.ex_client

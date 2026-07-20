@@ -14,7 +14,7 @@ import StrategyPicker from '../components/StrategyPicker.vue'
 import SymbolPicker from '../components/SymbolPicker.vue'
 import TradeTable from '../components/TradeTable.vue'
 import { formatError, saveStrategy } from '../api'
-import { detectMarket } from '../market'
+import { toFullSymbol } from '../market'
 import { gradePerformance } from '../grading'
 import type { Category, ExecutionMode } from '../types'
 import { useBacktestStore } from '../stores/backtest'
@@ -121,13 +121,6 @@ const grade = computed(() =>
   store.result ? gradePerformance(store.result.performance) : null,
 )
 
-// 当前股票完整代码（市场:6位），从 SymbolPicker 同步来的 code 是纯数字，
-// 需要带上市场前缀。复用 market.ts 的 detectMarket（与 SymbolPicker /
-// StocksPicker 同一套规则），避免分叉导致 ETF/基金（5 开头）等被错判市场。
-function fullSymbol(code6: string): string {
-  return `${detectMarket(code6)}:${code6}`
-}
-
 function openSaveForm() {
   saveName.value = `${strategyLabel.value} · ${code.value}`
   saveTags.value = ''
@@ -148,8 +141,7 @@ async function onSave() {
       strategy_label: strategyLabel.value,
       params: params.value,
       context: {
-        symbol: fullSymbol(code.value),
-        symbol_name: symbolPicker.value?.symbolName || '',
+        symbol: toFullSymbol(code.value),
         category: category.value,
         start_date: startDate.value,
         end_date: endDate.value,

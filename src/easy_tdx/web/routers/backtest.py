@@ -32,7 +32,7 @@ from easy_tdx.web.backtest_schemas import (
     TaskSummary,
     serialize_result,
 )
-from easy_tdx.web.deps import get_client
+from easy_tdx.web.deps import get_client, get_optional_ex_client
 from easy_tdx.web.task_runner import get_runner
 
 router = APIRouter(tags=["backtest"])
@@ -192,6 +192,7 @@ async def run_portfolio_backtest_async(
 async def run_multi_strategy_backtest_async(
     req: MultiStrategyBacktestRequest,
     client: Any = Depends(get_client),
+    ex_client: Any | None = Depends(get_optional_ex_client),
 ) -> TaskSubmitResponse:
     """提交多策略组合回测后台任务（资金分仓 / 并行制）。
 
@@ -199,7 +200,7 @@ async def run_multi_strategy_backtest_async(
     单个策略取数失败则跳过（不中断整组），全部失败返回 400。结果为
     MultiStrategyResult（结构同 PortfolioResult），通过 GET /backtest/tasks/{task_id} 轮询。
     """
-    slots = await _fetch_multi_strategy_bars(client, req.items)
+    slots = await _fetch_multi_strategy_bars(client, req.items, ex_client)
     if not slots:
         raise ValueError("所有策略槽位均未取到有效行情数据")
 
@@ -460,10 +461,12 @@ async def _fetch_portfolio_bars(
 async def _fetch_multi_strategy_bars(
     client: Any,
     items: list[Any],
+    ex_client: Any | None = None,
 ) -> list[Any]:
     """逐个策略槽位取行情 + 构造策略实例，组装 StrategySlot 列表（async）。
 
-    每条 item 自带 symbol（如 "SH:601088"）、category、start/end_date、strategy+params。
+    每条 item 自带 symbol（如 "SH:601088" 或 "US_STOCK:SCHD"）、category、
+    start/end_date、strategy+params。A 股走标准客户端，扩展市场走 ex_client。
     单条取数或策略构造失败则跳过（不中断整组）。返回的 StrategySlot 已绑定好策略
     实例与 df，可直接交给后台线程跑引擎（避免把 async client 带进线程）。
     """
@@ -479,21 +482,47 @@ async def _fetch_multi_strategy_bars(
             entry = registry.get(item.strategy)
         except KeyError:
             continue
-        # 2. 逐页取行情（覆盖 start_date，最多 10 页 = 8000 根）
+        # 2. 逐页取行情（覆盖 start_date，最多 10 页）
         market_str, code = item.symbol.split(":", 1)
+        is_ex_market = market_str in {"US_STOCK", "HK_MAIN_BOARD"}
+        page_size = 700 if is_ex_market else 800
         frames: list[pd.DataFrame] = []
         for page in range(10):
             try:
-                page_df = await client.get_security_bars(
-                    market_from_str(market_str),
-                    code,
-                    category_from_str(item.category),
-                    page * 800,
-                    800,
-                )
+                if is_ex_market:
+                    if ex_client is None:
+                        break
+                    from easy_tdx.mac.enums import Period
+                    from easy_tdx.web.convert import ex_market_from_str
+
+                    period_map = {
+                        "DAY": Period.DAILY,
+                        "WEEK": Period.WEEKLY,
+                        "MONTH": Period.MONTHLY,
+                        "MIN_1": Period.MIN_1,
+                        "MIN_5": Period.MIN_5,
+                        "MIN_15": Period.MIN_15,
+                        "MIN_30": Period.MIN_30,
+                        "MIN_60": Period.MIN_60,
+                    }
+                    page_df = await ex_client.goods_kline(
+                        market=ex_market_from_str(market_str),
+                        code=code,
+                        period=period_map[item.category],
+                        start=page * page_size,
+                        count=page_size,
+                    )
+                else:
+                    page_df = await client.get_security_bars(
+                        market_from_str(market_str),
+                        code,
+                        category_from_str(item.category),
+                        page * page_size,
+                        page_size,
+                    )
             except Exception:
                 break
-            if len(page_df) == 0:
+            if page_df is None or len(page_df) == 0:
                 break
             frames.append(page_df)
             if item.start_date and len(page_df) > 0:
@@ -501,7 +530,7 @@ async def _fetch_multi_strategy_bars(
                 oldest = str(page_df[dt_col].iloc[-1])[:10]
                 if oldest <= item.start_date:
                     break
-            if len(page_df) < 800:
+            if len(page_df) < page_size:
                 break
         if not frames:
             continue
