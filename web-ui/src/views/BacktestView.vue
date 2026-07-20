@@ -149,6 +149,7 @@ async function onSave() {
       params: params.value,
       context: {
         symbol: fullSymbol(code.value),
+        symbol_name: symbolPicker.value?.symbolName || '',
         category: category.value,
         start_date: startDate.value,
         end_date: endDate.value,

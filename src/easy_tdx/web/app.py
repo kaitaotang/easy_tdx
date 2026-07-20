@@ -275,16 +275,27 @@ def _create_app(
         class SPAStaticFiles(StaticFiles):
             """StaticFiles + SPA fallback：404 时返回 index.html。"""
 
+            @staticmethod
+            def _disable_html_cache(response: Any) -> Any:
+                # index.html 引用带内容哈希的 JS/CSS。若浏览器缓存旧 HTML，
+                # 发布后会一直运行旧 bundle；SPA 入口必须每次重新验证。
+                response.headers["Cache-Control"] = "no-store, max-age=0"
+                response.headers["Pragma"] = "no-cache"
+                return response
+
             async def get_response(self, path: str, scope):  # type: ignore[no-untyped-def]
                 try:
-                    return await super().get_response(path, scope)
+                    response = await super().get_response(path, scope)
+                    if path.rstrip("/") in ("", "index.html"):
+                        return self._disable_html_cache(response)
+                    return response
                 except Exception:
                     # 任何 404（路径非文件）都返回 index.html，让前端路由处理。
                     # 仅对 GET 请求生效；API 路径 (/api/v1/*) 已在前面注册，
                     # 不会走到这里。
                     index = _Path(str(self.directory)) / "index.html"
                     if index.is_file():
-                        return FileResponse(str(index))
+                        return self._disable_html_cache(FileResponse(str(index)))
                     raise
 
         app.mount("/", SPAStaticFiles(directory=str(dist_dir), html=True), name="web-ui")

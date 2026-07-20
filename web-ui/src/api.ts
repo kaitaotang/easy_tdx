@@ -53,6 +53,28 @@ export async function fetchStrategies(): Promise<StrategiesResponse> {
 }
 
 /**
+ * 查询 A 股证券中文名（走 /quotes 实时五档接口，取返回的 name 字段）。
+ * 用于回测页"已加载"那行展示"贵州茅台"之类的名称。
+ * 失败时返回空字符串（不阻塞主流程）。
+ */
+export async function fetchSecurityName(market: string, code: string): Promise<string> {
+  try {
+    const resp = await fetch(`${BASE}/quotes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stocks: [{ market, code }] }),
+    })
+    if (!resp.ok) return ''
+    const body = (await resp.json()) as { data: Record<string, unknown>[] }
+    if (!body.data || body.data.length === 0) return ''
+    const name = body.data[0].name
+    return typeof name === 'string' ? name : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
  * 按标的取 K 线行情（OHLCV）。
  *
  * 后端 /bars 单次最多 800 根。当 startDate 到 endDate 跨度超过 800 根时，

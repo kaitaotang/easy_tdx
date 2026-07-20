@@ -528,7 +528,11 @@ async def _fetch_multi_strategy_bars(
 def _run_multi_strategy_backtest(
     slots: list[Any], req: MultiStrategyBacktestRequest
 ) -> dict[str, Any]:
-    """执行多策略组合回测并返回清洗后的结果字典（后台线程内调用）。"""
+    """执行多策略组合回测并返回清洗后的结果字典（后台线程内调用）。
+
+    Web 组合结果需要用 K 线定位历史成交点。行情已经在 ``slots`` 中，直接随
+    每个独立结果返回，避免前端为了画图再次请求行情服务器。
+    """
     from easy_tdx.backtest.multi_strategy_engine import MultiStrategyEngine
 
     engine = MultiStrategyEngine(
@@ -541,7 +545,25 @@ def _run_multi_strategy_backtest(
         execution=req.execution,
     )
     result = engine.run()
-    return serialize_result(result)
+    payload = result.to_dict()
+    individual_results = payload.get("individual_results", {})
+    for slot in slots:
+        key = f"{slot.label}@{slot.symbol}"
+        item_result = individual_results.get(key)
+        if not isinstance(item_result, dict):
+            continue
+
+        bars = slot.df.copy()
+        if "datetime" not in bars.columns and "date" in bars.columns:
+            bars["datetime"] = bars["date"]
+        for column in ("vol", "amount"):
+            if column not in bars.columns:
+                bars[column] = 0
+        required = ["datetime", "open", "high", "low", "close", "vol", "amount"]
+        if all(column in bars.columns for column in required):
+            item_result["bars"] = bars[required].to_dict(orient="records")
+
+    return serialize_result(payload)
 
 
 def _run_optimize(df: pd.DataFrame, req: OptimizeBacktestRequest) -> dict[str, Any]:

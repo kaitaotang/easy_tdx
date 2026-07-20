@@ -11,6 +11,8 @@ import type { Bar, Trade } from '../types'
 const props = defineProps<{
   bars: Bar[]
   trades: Trade[]
+  /** 默认回看范围；组合历史点图传 0，确保全历史成交可见。 */
+  initialZoomStart?: number
 }>()
 
 const container = ref<HTMLDivElement>()
@@ -99,8 +101,8 @@ function buildOption(): echarts.EChartsCoreOption {
       axisLabel: { formatter: (v: number) => fmt2(v) },
     },
     dataZoom: [
-      { type: 'inside', start: 60, end: 100 },
-      { type: 'slider', bottom: 10, start: 60, end: 100 },
+      { type: 'inside', start: props.initialZoomStart ?? 60, end: 100 },
+      { type: 'slider', bottom: 10, start: props.initialZoomStart ?? 60, end: 100 },
     ],
     series: [
       {

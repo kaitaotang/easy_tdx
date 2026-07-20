@@ -13,6 +13,9 @@ function fmtDate(s: string): string {
 function fmtNum(v: number, digits = 2): string {
   return Number.isFinite(v) ? v.toFixed(digits) : '-'
 }
+function directionLabel(direction: Trade['direction']): string {
+  return direction === 'BUY' ? '买入' : '卖出'
+}
 </script>
 
 <template>
@@ -32,7 +35,7 @@ function fmtNum(v: number, digits = 2): string {
       <tbody>
         <tr v-for="(t, i) in trades" :key="i" :class="{ rejected: t.rejected }">
           <td>{{ fmtDate(t.datetime) }}</td>
-          <td :class="t.direction">{{ t.direction }}</td>
+          <td :class="t.direction">{{ directionLabel(t.direction) }}</td>
           <td class="num">{{ fmtNum(t.size, 0) }}</td>
           <td class="num">{{ fmtNum(t.price, 3) }}</td>
           <td class="num muted">{{ fmtNum(t.commission, 2) }}</td>

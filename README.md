@@ -1,4 +1,10 @@
 # easy-tdx
+修改前端
+cd easy_tdx/web-ui
+npm run build
+修改后端
+easy-tdx serve --port 8000 --ex --no-open-browser
+
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/easy-tdx.svg)](https://pypi.org/project/easy-tdx/)

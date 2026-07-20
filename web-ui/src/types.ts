@@ -117,6 +117,8 @@ export interface BacktestResult {
   trades: Trade[]
   positions: Record<string, unknown>[]
   config: Record<string, unknown>
+  /** 多策略组合接口附带的原始 K 线，用于恢复历史买卖点图。 */
+  bars?: Bar[]
 }
 
 // ── 后台任务（POST /api/v1/backtest/run/async + GET /tasks/{id}） ─────────────
