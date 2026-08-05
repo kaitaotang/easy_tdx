@@ -49,9 +49,16 @@ function buildOption(): echarts.EChartsCoreOption {
   const markPoints: Array<{
     name: string
     coord: [number, number]
-    itemStyle: { color: string }
+    itemStyle: {
+      color: string
+      borderColor: string
+      borderWidth: number
+      shadowBlur: number
+      shadowColor: string
+    }
     symbol: string
     symbolSize: number
+    symbolOffset: [number, number]
   }> = []
   for (const t of props.trades) {
     if (t.rejected) continue
@@ -66,11 +73,19 @@ function buildOption(): echarts.EChartsCoreOption {
     }
     const isBuy = t.direction === 'BUY'
     markPoints.push({
-      name: t.direction,
+      name: isBuy ? 'B' : 'S',
       coord: [idx, t.price],
-      itemStyle: { color: isBuy ? UP_COLOR : DOWN_COLOR },
-      symbol: isBuy ? 'triangle' : 'pin',
-      symbolSize: 14,
+      itemStyle: {
+        color: isBuy ? UP_COLOR : DOWN_COLOR,
+        borderColor: '#f4f7fb',
+        borderWidth: 1,
+        shadowBlur: 5,
+        shadowColor: 'rgba(0, 0, 0, 0.5)',
+      },
+      symbol: 'circle',
+      symbolSize: 16,
+      // 买点放在成交价下方、卖点放在成交价上方，减少对 K 线实体的遮挡。
+      symbolOffset: [0, isBuy ? 9 : -9],
     })
   }
 
@@ -117,7 +132,14 @@ function buildOption(): echarts.EChartsCoreOption {
         },
         markPoint: {
           data: markPoints,
-          label: { show: false },
+          label: {
+            show: true,
+            position: 'inside',
+            color: '#fff',
+            fontSize: 9,
+            fontWeight: 800,
+            formatter: '{b}',
+          },
         },
       },
     ],
