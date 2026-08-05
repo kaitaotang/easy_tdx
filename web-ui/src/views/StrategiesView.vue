@@ -17,6 +17,7 @@ import {
   deleteSavedStrategy,
   fetchSavedStrategies,
   formatError,
+  renameSavedStrategy,
   saveStrategy,
 } from '../api'
 import { gradePortfolio } from '../grading'
@@ -31,6 +32,13 @@ const strategies = ref<SavedStrategy[]>([])
 const loading = ref(false)
 const error = ref('')
 const deletingId = ref<string | null>(null)
+
+// ── 组合改名弹窗 ────────────────────────────────────────────────────────────
+const renameOpen = ref(false)
+const renameTarget = ref<SavedStrategy | null>(null)
+const renameName = ref('')
+const renameLoading = ref(false)
+const renameNameRef = ref<HTMLInputElement | null>(null)
 
 // ── Tab 分类：单标的 / 组合 ────────────────────────────────────────────────────
 // single tab = kind='single'；combo tab = kind='portfolio' | 'multi'
@@ -328,6 +336,45 @@ async function onDelete(s: SavedStrategy) {
     error.value = formatError(e)
   } finally {
     deletingId.value = null
+  }
+}
+
+function openRename(s: SavedStrategy) {
+  renameTarget.value = s
+  renameName.value = s.name
+  error.value = ''
+  renameOpen.value = true
+  nextTick(() => renameNameRef.value?.focus())
+}
+
+function closeRename() {
+  if (renameLoading.value) return
+  renameOpen.value = false
+  renameTarget.value = null
+  error.value = ''
+}
+
+async function submitRename() {
+  const target = renameTarget.value
+  const name = renameName.value.trim()
+  if (!target) return
+  if (!name) {
+    error.value = '请输入组合名称'
+    return
+  }
+  renameLoading.value = true
+  error.value = ''
+  try {
+    const updated = await renameSavedStrategy(target.id, name)
+    strategies.value = strategies.value.map((item) =>
+      item.id === updated.id ? updated : item,
+    )
+    renameOpen.value = false
+    renameTarget.value = null
+  } catch (e) {
+    error.value = formatError(e)
+  } finally {
+    renameLoading.value = false
   }
 }
 
@@ -676,6 +723,14 @@ const comboGrade = computed(() =>
             </button>
             <button v-else class="primary sm" @click="onLoad(s)">载入</button>
             <button
+              v-if="s.kind !== 'single'"
+              class="rename-btn sm"
+              :disabled="renameLoading && renameTarget?.id === s.id"
+              @click="openRename(s)"
+            >
+              {{ renameLoading && renameTarget?.id === s.id ? '…' : '改名' }}
+            </button>
+            <button
               class="danger sm"
               :disabled="deletingId === s.id"
               @click="onDelete(s)"
@@ -685,6 +740,38 @@ const comboGrade = computed(() =>
           </span>
         </div>
       </article>
+    </div>
+
+    <!-- 修改组合名称弹窗 -->
+    <div v-if="renameOpen" class="modal-mask" @click.self="closeRename">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rename-modal-title"
+        class="modal rename-modal"
+        @keydown.esc.prevent="closeRename"
+      >
+        <h3 id="rename-modal-title">修改组合名称</h3>
+        <p class="modal-desc">只修改策略库中的显示名称，不会改变组合配置和历史结果。</p>
+        <div class="modal-field">
+          <label for="rename-name-input">组合名称</label>
+          <input
+            id="rename-name-input"
+            ref="renameNameRef"
+            v-model="renameName"
+            maxlength="120"
+            placeholder="请输入新的组合名称"
+            @keydown.enter.prevent="submitRename"
+          />
+        </div>
+        <p v-if="error" class="modal-error">⚠ {{ error }}</p>
+        <div class="modal-actions">
+          <button class="ghost sm" :disabled="renameLoading" @click="closeRename">取消</button>
+          <button class="primary sm" :disabled="renameLoading" @click="submitRename">
+            {{ renameLoading ? '保存中…' : '保存名称' }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- 保存组合弹窗 -->
@@ -1214,6 +1301,21 @@ const comboGrade = computed(() =>
 .sm {
   font-size: 12px;
   padding: 4px 12px;
+}
+.rename-btn {
+  border: 1px solid rgba(74, 158, 255, 0.5);
+  background: rgba(74, 158, 255, 0.1);
+  color: var(--accent);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.rename-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(74, 158, 255, 0.18);
+}
+.rename-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .danger {
   border: 1px solid var(--border);

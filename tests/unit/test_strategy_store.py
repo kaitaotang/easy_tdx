@@ -1,8 +1,8 @@
 """策略库（已保存策略）持久化 + Web API 测试（离线，无网络）。
 
 覆盖：
-- ``StrategyStore``：加入 / 列出 / 查看 / 删除 / 时间戳自动填充 / 重复 id
-- 路由端到端：POST 创建、GET 列表、GET 详情、DELETE、404 路径、校验
+- ``StrategyStore``：加入 / 列出 / 查看 / 改名 / 删除 / 时间戳自动填充 / 重复 id
+- 路由端到端：POST 创建、GET 列表、GET 详情、PATCH 改名、DELETE、404 路径、校验
 """
 
 from __future__ import annotations
@@ -105,6 +105,28 @@ def test_get_returns_record(store: StrategyStore):
     assert got.context["stocks"] == ["SH:600519", "SZ:000858"]
 
 
+def test_rename_updates_only_name(store: StrategyStore):
+    rec = store.add(_sample_portfolio())
+    renamed = store.rename(rec.id, "  新组合名称  ")
+    assert renamed is not None
+    assert renamed.name == "新组合名称"
+    assert renamed.created_at == rec.created_at
+    assert renamed.context == rec.context
+    persisted = store.get(rec.id)
+    assert persisted is not None
+    assert persisted.name == "新组合名称"
+
+
+def test_rename_missing_returns_none(store: StrategyStore):
+    assert store.rename("nonexistent", "新名称") is None
+
+
+def test_rename_rejects_blank_name(store: StrategyStore):
+    rec = store.add(_sample_portfolio())
+    with pytest.raises(ValueError, match="名称不能为空"):
+        store.rename(rec.id, "   ")
+
+
 def test_delete_removes_record(store: StrategyStore):
     rec = store.add(_sample_single())
     assert store.delete(rec.id) is True
@@ -191,7 +213,7 @@ def _create_payload(kind: str = "single", **over) -> dict:
     return base
 
 
-def test_router_create_then_list_get_delete(client: TestClient):
+def test_router_create_then_list_get_rename_delete(client: TestClient):
     # 1. 创建
     resp = client.post("/api/v1/strategies", json=_create_payload())
     assert resp.status_code == 201
@@ -214,12 +236,19 @@ def test_router_create_then_list_get_delete(client: TestClient):
     assert resp.status_code == 200
     assert resp.json()["snapshot"]["total_return"] == pytest.approx(0.35)
 
-    # 4. 删除（返回 200 + 确认体，非 204，见路由注释）
+    # 4. 改名（其他配置保持不变）
+    resp = client.patch(f"/api/v1/strategies/{sid}", json={"name": "  新组合名称  "})
+    assert resp.status_code == 200
+    renamed = resp.json()
+    assert renamed["name"] == "新组合名称"
+    assert renamed["params"] == {"fast": 5, "slow": 20}
+
+    # 5. 删除（返回 200 + 确认体，非 204，见路由注释）
     resp = client.delete(f"/api/v1/strategies/{sid}")
     assert resp.status_code == 200
     assert resp.json()["deleted"] == sid
 
-    # 5. 列表为空
+    # 6. 列表为空
     assert client.get("/api/v1/strategies").json()["count"] == 0
 
 
@@ -232,6 +261,17 @@ def test_router_get_missing_returns_400(client: TestClient):
 def test_router_delete_missing_returns_400(client: TestClient):
     resp = client.delete("/api/v1/strategies/nonexistent")
     assert resp.status_code == 400
+
+
+def test_router_rename_missing_returns_400(client: TestClient):
+    resp = client.patch("/api/v1/strategies/nonexistent", json={"name": "新名称"})
+    assert resp.status_code == 400
+
+
+def test_router_rename_rejects_blank_name(client: TestClient):
+    created = client.post("/api/v1/strategies", json=_create_payload()).json()
+    resp = client.patch(f"/api/v1/strategies/{created['id']}", json={"name": "   "})
+    assert resp.status_code == 422
 
 
 def test_router_rejects_empty_name(client: TestClient):

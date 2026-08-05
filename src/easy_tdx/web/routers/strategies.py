@@ -1,4 +1,4 @@
-"""策略库路由：列出 / 查看 / 保存 / 删除用户收藏的策略。
+"""策略库路由：列出 / 查看 / 保存 / 改名 / 删除用户收藏的策略。
 
 设计要点：
 - 持久化走 :class:`~easy_tdx.web.strategy_store.StrategyStore`（SQLite 单文件），
@@ -15,6 +15,7 @@ from easy_tdx.web.backtest_schemas import (
     SavedStrategy,
     SavedStrategyCreate,
     SavedStrategyListResponse,
+    SavedStrategyRename,
 )
 from easy_tdx.web.strategy_store import (
     SavedStrategy as SavedStrategyRecord,
@@ -77,6 +78,16 @@ async def create_saved_strategy(req: SavedStrategyCreate) -> SavedStrategy:
         app_version=_app_version(),
     )
     saved = store.add(rec)
+    return _to_response(saved)
+
+
+@router.patch("/strategies/{strategy_id}", response_model=SavedStrategy)
+async def rename_saved_strategy(strategy_id: str, req: SavedStrategyRename) -> SavedStrategy:
+    """修改一条已保存策略的名称，不改变其策略配置与回测快照。"""
+    store = get_store()
+    saved = store.rename(strategy_id, req.name)
+    if saved is None:
+        raise ValueError(f"策略 '{strategy_id}' 不存在")
     return _to_response(saved)
 
 

@@ -321,6 +321,17 @@ export async function saveStrategy(req: SavedStrategyCreate): Promise<SavedStrat
   return (await resp.json()) as SavedStrategy
 }
 
+/** 修改策略库中的显示名称（策略参数、标的和绩效快照保持不变）。 */
+export async function renameSavedStrategy(id: string, name: string): Promise<SavedStrategy> {
+  const resp = await fetch(`${BASE}/strategies/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!resp.ok) await throwError(resp)
+  return (await resp.json()) as SavedStrategy
+}
+
 /** 删除一条已保存策略。 */
 export async function deleteSavedStrategy(id: string): Promise<void> {
   const resp = await fetch(`${BASE}/strategies/${id}`, { method: 'DELETE' })

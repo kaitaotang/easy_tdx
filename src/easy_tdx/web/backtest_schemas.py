@@ -22,6 +22,7 @@ __all__ = [
     "OptimizeAllRankEntry",
     "SavedStrategy",
     "SavedStrategyCreate",
+    "SavedStrategyRename",
     "SavedStrategyListResponse",
     "MultiStrategyItem",
     "MultiStrategyBacktestRequest",
@@ -301,6 +302,20 @@ class SavedStrategyCreate(BaseModel):
     )
     tags: list[str] = Field(default_factory=list)
     notes: str = Field(default="", max_length=2000)
+
+
+class SavedStrategyRename(BaseModel):
+    """修改已保存策略的显示名称。"""
+
+    name: str = Field(..., min_length=1, max_length=120, description="新的策略名称")
+
+    @model_validator(mode="before")
+    @classmethod
+    def strip_name(cls, data: Any) -> Any:
+        """先去除首尾空白，再执行长度校验。"""
+        if isinstance(data, dict) and isinstance(data.get("name"), str):
+            return {**data, "name": data["name"].strip()}
+        return data
 
 
 class SavedStrategy(BaseModel):

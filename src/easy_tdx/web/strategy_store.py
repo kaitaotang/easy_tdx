@@ -3,8 +3,7 @@
 设计要点：
 - 单文件 SQLite，落在项目统一配置目录（``~/.easy_tdx/strategies.db``，
   随 ``EASY_TDX_CONFIG_DIR`` 环境变量走），与 ``config.py`` 同约定。
-- 只提供"加入 / 列出 / 查看 / 删除"四个动作（CRUD 中的 CR**D**，不含编辑），
-  对应用户诉求："策略能加入，也要能删除"。
+- 提供加入 / 列出 / 查看 / 改名 / 删除，组合名称可在策略库中直接维护。
 - 线程安全：每个公共方法内部 ``with sqlite3.connect(...)`` 短连接，配合
   ``check_same_thread=False`` + 写操作串行（SQLite 单写者锁兜底）。Web 后台
   任务在 ThreadPool 内调用，故默认 ``check_same_thread=False``。
@@ -59,7 +58,7 @@ class SavedStrategy:
 
     id: str
     name: str
-    kind: str  # "single" | "portfolio"
+    kind: str  # "single" | "portfolio" | "multi"
     strategy: str
     strategy_label: str = ""
     params: dict[str, Any] = field(default_factory=dict)
@@ -206,6 +205,22 @@ class StrategyStore:
     def get(self, strategy_id: str) -> SavedStrategy | None:
         """按 id 查看单条；不存在返回 None。"""
         with self._connect() as conn:
+            row = conn.execute("SELECT * FROM strategies WHERE id = ?", (strategy_id,)).fetchone()
+        return SavedStrategy.from_row(row) if row else None
+
+    def rename(self, strategy_id: str, name: str) -> SavedStrategy | None:
+        """修改策略名称并更新时间；不存在返回 None。"""
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("策略名称不能为空")
+        now = _now_iso()
+        with _write_lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE strategies SET name = ?, updated_at = ? WHERE id = ?",
+                (clean_name, now, strategy_id),
+            )
+            if cur.rowcount == 0:
+                return None
             row = conn.execute("SELECT * FROM strategies WHERE id = ?", (strategy_id,)).fetchone()
         return SavedStrategy.from_row(row) if row else None
 
