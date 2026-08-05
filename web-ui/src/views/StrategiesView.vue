@@ -3,14 +3,16 @@
 // 以及「组合回测」——勾选多个策略，各拿 1/N 资金、各跑原标的，看综合表现。
 // 数据来自后端 SQLite（GET /api/v1/strategies）。空态提示去回测页保存。
 
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import EquityChart from '../components/EquityChart.vue'
 import GradeDetails from '../components/GradeDetails.vue'
+import KlineChart from '../components/KlineChart.vue'
 import MetricTable from '../components/MetricTable.vue'
 import PortfolioCompareChart from '../components/PortfolioCompareChart.vue'
 import PortfolioSummaryTable from '../components/PortfolioSummaryTable.vue'
+import TradeTable from '../components/TradeTable.vue'
 import {
   deleteSavedStrategy,
   fetchSavedStrategies,
@@ -19,7 +21,7 @@ import {
 } from '../api'
 import { gradePortfolio } from '../grading'
 import { detectExMarket, detectMarket, isExMarketCode } from '../market'
-import type { MultiStrategyItem, Performance, SavedStrategy } from '../types'
+import type { MultiStrategyItem, Performance, SavedStrategy, Trade } from '../types'
 import { useBacktestStore } from '../stores/backtest'
 
 const router = useRouter()
@@ -60,6 +62,8 @@ const lastComboItems = ref<MultiStrategyItem[]>([])
 const lastComboCash = ref<number>(1_000_000)
 // 结果区引用：跑完后滚动定位
 const comboResultRef = ref<HTMLElement | null>(null)
+// 历史买卖点区引用：组合“重跑到今天”后直接定位到这里。
+const historyTradesRef = ref<HTMLElement | null>(null)
 // 保存弹窗里名称输入框：打开时自动聚焦
 const saveComboNameRef = ref<HTMLInputElement | null>(null)
 
@@ -254,9 +258,13 @@ async function onLoadMulti(s: SavedStrategy) {
   lastComboItems.value = items
   lastComboCash.value = cash
   await store.runMultiStrategy({ items, cash })
-  // 跑完滚动到结果区
+  // 跑完直接定位历史买卖点，避免它被前面的绩效区块藏在几屏之后。
   await nextTick()
-  comboResultRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  const target = historyTradesRef.value || comboResultRef.value
+  target?.scrollIntoView({
+    behavior: 'smooth',
+    block: 'start',
+  })
 }
 
 onMounted(load)
@@ -402,6 +410,72 @@ const holdings = computed<Holding[]>(() => {
 })
 
 const holdingCount = computed(() => holdings.value.filter((h) => h.holding).length)
+
+// ── 组合回测：历史成交与分策略 K 线买卖点 ────────────────────────────────────
+// 后端在 individual_results[*] 中同时返回 trades 和本次回测使用的 bars。
+// 按策略拆开展示，避免同一标的挂多套策略时把信号混在一张图里。
+const strategyTradeResults = computed(() => {
+  const results = store.multiStrategyResult?.individual_results || {}
+  return Object.entries(results).map(([key, result]) => ({
+    key,
+    trades: Array.isArray(result.trades) ? result.trades : [],
+    bars: Array.isArray(result.bars) ? result.bars : [],
+  }))
+})
+
+const totalTradeCount = computed(() =>
+  strategyTradeResults.value.reduce((sum, item) => sum + item.trades.length, 0),
+)
+
+interface CombinedTradeRow extends Trade {
+  key: string
+  strategy: string
+  symbol: string
+  amount: number
+}
+
+const combinedTradeRows = computed<CombinedTradeRow[]>(() => {
+  const rows = strategyTradeResults.value.flatMap((item) => {
+    const at = item.key.lastIndexOf('@')
+    const strategy = at >= 0 ? item.key.slice(0, at) : item.key
+    const symbol = at >= 0 ? item.key.slice(at + 1) : ''
+    return item.trades.map((trade, index) => ({
+      ...trade,
+      key: `${item.key}-${trade.datetime}-${index}`,
+      strategy,
+      symbol,
+      amount: trade.size * trade.price,
+    }))
+  })
+  return rows.sort((a, b) => b.datetime.localeCompare(a.datetime))
+})
+
+function tradeDirectionLabel(direction: Trade['direction']): string {
+  return direction === 'BUY' ? '买入' : '卖出'
+}
+
+function tradeDate(datetime: string): string {
+  return datetime.slice(0, 10)
+}
+
+// 只渲染展开项的 K 线，避免多个长周期策略同时创建大型 ECharts 实例。
+const expandedTradeKeys = ref<Set<string>>(new Set())
+
+watch(
+  strategyTradeResults,
+  (items) => {
+    expandedTradeKeys.value = new Set(items.length > 0 ? [items[0].key] : [])
+  },
+  { immediate: true },
+)
+
+function onTradeGroupToggle(event: Event, key: string) {
+  const details = event.currentTarget as HTMLDetailsElement
+  const next = new Set(expandedTradeKeys.value)
+  if (details.open) next.add(key)
+  else next.delete(key)
+  expandedTradeKeys.value = next
+}
 
 // 持仓三态视图：把 statusClass / label / rowClass 一次性算好，模板只读不调函数。
 // 否则每行 ×3 次函数调用 + holdingRowClass 返回新对象会触发 Vue 额外跟踪。
@@ -719,6 +793,80 @@ const comboGrade = computed(() =>
         <div v-if="comboPerf" class="combo-chart-block">
           <h4>绩效指标</h4>
           <MetricTable :perf="comboPerf" />
+        </div>
+
+        <!-- 历史成交与买卖点：重跑到今天后仍展示完整回测过程，而不只显示最后持仓。 -->
+        <div ref="historyTradesRef" class="combo-chart-block history-trades-block">
+          <h4>
+            历史买入卖出（{{ totalTradeCount }} 个成交点）
+            <span class="holdings-hint">按策略分别显示，买入/卖出点标在各自 K 线上</span>
+          </h4>
+
+          <div class="warn-box disclaimer trade-model-note">
+            这里是历史模拟成交记录，不是当前下单建议。每套策略独立管理自己的分配资金。
+          </div>
+
+          <p v-if="totalTradeCount === 0" class="empty-text">本次回测没有产生买卖记录</p>
+          <div v-else class="combined-trades-wrap">
+            <table class="holdings-table combined-trades-table">
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>策略</th>
+                  <th>标的</th>
+                  <th>动作</th>
+                  <th class="num">数量</th>
+                  <th class="num">成交价</th>
+                  <th class="num">成交金额</th>
+                  <th class="num">平仓盈亏</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in combinedTradeRows" :key="row.key" :class="{ rejected: row.rejected }">
+                  <td>{{ tradeDate(row.datetime) }}</td>
+                  <td>{{ row.strategy }}</td>
+                  <td class="sym">{{ row.symbol }}</td>
+                  <td :class="row.direction === 'BUY' ? 'pos' : 'neg'">
+                    {{ tradeDirectionLabel(row.direction) }}
+                  </td>
+                  <td class="num">{{ row.size.toFixed(0) }}</td>
+                  <td class="num">{{ row.price.toFixed(3) }}</td>
+                  <td class="num">{{ row.amount.toFixed(2) }}</td>
+                  <td class="num" :class="{ pos: row.pnl > 0, neg: row.pnl < 0 }">
+                    {{ row.pnl === 0 ? '-' : row.pnl.toFixed(2) }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h4 class="strategy-chart-title">
+            分策略 K 线买卖点
+            <span class="holdings-hint">展开策略查看 K 线上的买入/卖出标记</span>
+          </h4>
+          <div v-if="totalTradeCount > 0" class="strategy-trades">
+            <details
+              v-for="item in strategyTradeResults"
+              :key="item.key"
+              class="strategy-trade-group"
+              :open="expandedTradeKeys.has(item.key)"
+              @toggle="onTradeGroupToggle($event, item.key)"
+            >
+              <summary>
+                <span>{{ item.key }}</span>
+                <span class="trade-count">{{ item.trades.length }} 笔</span>
+              </summary>
+              <div v-if="expandedTradeKeys.has(item.key)">
+                <div v-if="item.bars.length" class="strategy-kline">
+                  <KlineChart :bars="item.bars" :trades="item.trades" :initial-zoom-start="0" />
+                </div>
+                <p v-else class="empty-text kline-missing">
+                  当前任务没有返回 K 线，仅显示成交明细。请重新运行组合回测。
+                </p>
+                <TradeTable :trades="item.trades" />
+              </div>
+            </details>
+          </div>
         </div>
 
         <div class="combo-chart-block">
@@ -1146,6 +1294,76 @@ const comboGrade = computed(() =>
   color: var(--text-dim);
   font-size: 13px;
   padding: 12px 0;
+}
+.strategy-trades {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.history-trades-block {
+  scroll-margin-top: 56px;
+}
+.trade-model-note {
+  margin-bottom: 8px;
+}
+.combined-trades-wrap {
+  max-height: 440px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.combined-trades-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-panel);
+}
+.combined-trades-table tr.rejected td {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+.strategy-chart-title {
+  margin-top: 20px;
+}
+.kline-missing {
+  padding: 16px 12px;
+  border-top: 1px solid var(--border);
+}
+.strategy-trade-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.strategy-trade-group summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--bg-panel);
+}
+.strategy-trade-group summary:hover {
+  background: var(--bg-hover);
+}
+.strategy-trade-group .trade-count {
+  flex: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+}
+.strategy-kline {
+  border-top: 1px solid var(--border);
+  padding: 10px 6px 0;
+}
+.strategy-trade-group :deep(.trade-table-wrap) {
+  max-height: 360px;
+  border-top: 1px solid var(--border);
+  overflow: auto;
 }
 .holdings-table {
   width: 100%;
