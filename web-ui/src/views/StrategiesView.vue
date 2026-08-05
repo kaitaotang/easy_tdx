@@ -70,8 +70,6 @@ const lastComboItems = ref<MultiStrategyItem[]>([])
 const lastComboCash = ref<number>(1_000_000)
 // 结果区引用：跑完后滚动定位
 const comboResultRef = ref<HTMLElement | null>(null)
-// 历史买卖点区引用：组合“重跑到今天”后直接定位到这里。
-const historyTradesRef = ref<HTMLElement | null>(null)
 // 保存弹窗里名称输入框：打开时自动聚焦
 const saveComboNameRef = ref<HTMLInputElement | null>(null)
 
@@ -266,10 +264,9 @@ async function onLoadMulti(s: SavedStrategy) {
   lastComboItems.value = items
   lastComboCash.value = cash
   await store.runMultiStrategy({ items, cash })
-  // 跑完直接定位历史买卖点，避免它被前面的绩效区块藏在几屏之后。
+  // 跑完回到报告顶部，先看当前信号与核心指标。
   await nextTick()
-  const target = historyTradesRef.value || comboResultRef.value
-  target?.scrollIntoView({
+  comboResultRef.value?.scrollIntoView({
     behavior: 'smooth',
     block: 'start',
   })
@@ -457,6 +454,39 @@ const holdings = computed<Holding[]>(() => {
 })
 
 const holdingCount = computed(() => holdings.value.filter((h) => h.holding).length)
+const waitingCount = computed(() => holdings.value.length - holdingCount.value)
+const profitableHoldingCount = computed(
+  () => holdings.value.filter((h) => h.holding && h.unrealizedPnl >= 0).length,
+)
+
+const resultStartDate = computed(() => {
+  const equity = store.multiStrategyResult?.combined_equity || []
+  return equity.length > 0 ? equity[0].datetime.slice(0, 10) : '-'
+})
+
+const resultEndDate = computed(() => {
+  const equity = store.multiStrategyResult?.combined_equity || []
+  return equity.length > 0 ? equity[equity.length - 1].datetime.slice(0, 10) : '-'
+})
+
+const signalHeadline = computed(() => {
+  const total = holdings.value.length
+  if (total === 0) return '暂无模型仓位数据'
+  if (holdingCount.value === 0) return '当前全部空仓，等待买点'
+  if (holdingCount.value === total) return `${total} 个策略均在持仓`
+  return `${holdingCount.value} 个策略持仓，${waitingCount.value} 个等待买点`
+})
+
+const signalDescription = computed(() => {
+  if (holdings.value.length === 0) return '请检查本次回测是否返回持仓快照'
+  if (holdingCount.value === 0) return '目前没有策略要求持有标的，不代表未来不会出现买点'
+  return `持仓中 ${profitableHoldingCount.value} 个浮盈，${holdingCount.value - profitableHoldingCount.value} 个浮亏`
+})
+
+const signalTone = computed(() => {
+  if (holdings.value.length === 0 || holdingCount.value === 0) return 'cash'
+  return waitingCount.value === 0 ? 'active' : 'mixed'
+})
 
 // ── 组合回测：历史成交与分策略 K 线买卖点 ────────────────────────────────────
 // 后端在 individual_results[*] 中同时返回 trades 和本次回测使用的 bars。
@@ -828,12 +858,16 @@ const comboGrade = computed(() =>
       ref="comboResultRef"
       class="combo-result"
     >
-      <h3 class="combo-title">
-        组合回测结果
-        <span v-if="store.multiStrategyResult" class="combo-meta">
-          · {{ store.multiStrategyResult.total_performance.total_stocks }} 个策略 ·
-          总资金 {{ store.multiStrategyResult.total_performance.total_cash.toFixed(0) }}
-        </span>
+      <header class="combo-result-header">
+        <div>
+          <span class="result-eyebrow">PORTFOLIO REPORT</span>
+          <h3 class="combo-title">组合回测结果</h3>
+          <div v-if="store.multiStrategyResult" class="combo-meta">
+            <span>{{ store.multiStrategyResult.total_performance.total_stocks }} 个策略</span>
+            <span>总资金 {{ num(store.multiStrategyResult.total_performance.total_cash, 0) }}</span>
+            <span>{{ resultStartDate }} — {{ resultEndDate }}</span>
+          </div>
+        </div>
         <button
           v-if="store.multiStrategyResult && !store.multiStrategyRunning"
           class="save-combo-btn"
@@ -841,55 +875,195 @@ const comboGrade = computed(() =>
         >
           💾 保存为组合
         </button>
-      </h3>
-
-      <!-- 过拟合警示 -->
-      <div v-if="store.multiStrategyResult" class="warn-box overfit">
-        ⚠ <strong>过拟合提醒：</strong>组合的历史回测表现优秀，不代表未来一定有效。
-        收益可能来自特定时段的市场环境（如某段主升浪），切换到震荡/熊市可能失效。
-        把它当作"今日该买该卖"的<strong>参考信号</strong>，而非"未来必涨"的保证。
-      </div>
+      </header>
 
       <div v-if="store.multiStrategyRunning && !store.multiStrategyResult" class="combo-loading">
-        组合回测中…（逐个策略取行情 + 回测，请稍候）
+        <span class="loading-dot"></span>
+        <strong>正在生成组合报告</strong>
+        <small>逐个策略取行情并执行回测，请稍候</small>
       </div>
 
       <div v-if="store.multiStrategyResult" class="combo-content">
-        <div v-if="comboGrade" class="combo-chart-block">
-          <h4>组合评级</h4>
-          <GradeDetails :result="comboGrade" expanded />
-        </div>
+        <!-- 第一层：用户最关心的当前信号 -->
+        <section class="signal-hero" :class="`tone-${signalTone}`">
+          <div class="signal-copy">
+            <span class="section-kicker">当前模型信号 · 截至 {{ resultEndDate }}</span>
+            <h4>{{ signalHeadline }}</h4>
+            <p>{{ signalDescription }}</p>
+          </div>
+          <div class="signal-counts" aria-label="当前策略状态汇总">
+            <div class="signal-count holding-count">
+              <span class="count-value">{{ holdingCount }}</span>
+              <span class="count-label">持仓中</span>
+            </div>
+            <div class="signal-count waiting-count">
+              <span class="count-value">{{ waitingCount }}</span>
+              <span class="count-label">等买点</span>
+            </div>
+          </div>
+        </section>
 
-        <div class="combo-summary">
-          <div class="combo-stat">
-            <span class="label">组合总收益</span>
-            <span
-              class="value"
-              :class="store.multiStrategyResult.total_performance.total_return > 0 ? 'pos' : 'neg'"
-            >
-              {{ (store.multiStrategyResult.total_performance.total_return * 100).toFixed(2) }}%
-            </span>
+        <!-- 第二层：只保留四个核心数字 + 总评级，详细指标收进下方折叠区。 -->
+        <div v-if="comboPerf" class="kpi-grid">
+          <div class="kpi-card primary-kpi">
+            <span class="kpi-label">组合总收益</span>
+            <strong class="kpi-value" :class="comboPerf.total_return >= 0 ? 'pos' : 'neg'">
+              {{ (comboPerf.total_return * 100).toFixed(2) }}%
+            </strong>
+            <span class="kpi-note">整个回测区间</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">年化收益</span>
+            <strong class="kpi-value" :class="comboPerf.annual_return >= 0 ? 'pos' : 'neg'">
+              {{ (comboPerf.annual_return * 100).toFixed(2) }}%
+            </strong>
+            <span class="kpi-note">折算年度表现</span>
+          </div>
+          <div class="kpi-card risk-kpi">
+            <span class="kpi-label">最大回撤</span>
+            <strong class="kpi-value">{{ (comboPerf.max_drawdown * 100).toFixed(2) }}%</strong>
+            <span class="kpi-note">历史最深亏损幅度</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-label">夏普比率</span>
+            <strong class="kpi-value neutral">{{ comboPerf.sharpe.toFixed(2) }}</strong>
+            <span class="kpi-note">收益风险性价比</span>
+          </div>
+          <div v-if="comboGrade" class="kpi-card grade-kpi" :class="`grade-${comboGrade.grade}`">
+            <span class="kpi-label">组合评级</span>
+            <strong class="kpi-value grade-value">
+              {{ comboGrade.grade }} <small>{{ comboGrade.score.toFixed(0) }}分</small>
+            </strong>
+            <span class="kpi-note">风险调整后体验</span>
           </div>
         </div>
 
-        <div class="combo-chart-block">
-          <h4>组合净值曲线</h4>
-          <EquityChart :equity="store.multiStrategyResult.combined_equity" />
+        <!-- 第三层：当前策略逐项信号，放在历史分析之前。 -->
+        <section class="report-card priority-card">
+          <div class="report-section-head">
+            <div>
+              <span class="section-kicker">ACTION NOW</span>
+              <h4>当前策略信号</h4>
+              <p>这是模型在回测结束日的状态，不是你的真实账户持仓</p>
+            </div>
+            <span class="section-badge">{{ holdingCount }}/{{ holdings.length }} 持仓</span>
+          </div>
+
+          <p v-if="holdings.length === 0" class="empty-text">无持仓数据</p>
+          <div v-else class="table-scroll">
+            <table class="holdings-table signal-table">
+              <thead>
+                <tr>
+                  <th>策略</th>
+                  <th>标的</th>
+                  <th>当前状态</th>
+                  <th class="num">持仓数量</th>
+                  <th class="num">成本价</th>
+                  <th class="num">市值</th>
+                  <th class="num">未实现盈亏</th>
+                  <th class="num">收益率</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="h in holdingViews" :key="h.key" :class="h.rowClass">
+                  <td class="strategy-name">{{ h.strategyLabel }}</td>
+                  <td class="sym">{{ h.symbol }}</td>
+                  <td><span class="status-tag" :class="h.statusClass">{{ h.statusLabel }}</span></td>
+                  <td class="num">{{ h.size > 0 ? h.size.toFixed(0) : '-' }}</td>
+                  <td class="num">{{ h.holding ? h.avgPrice.toFixed(2) : '-' }}</td>
+                  <td class="num">{{ h.holding ? h.marketValue.toFixed(0) : '-' }}</td>
+                  <td class="num" :class="{ pos: h.unrealizedPnl > 0, neg: h.unrealizedPnl < 0 }">
+                    {{ h.holding ? (h.unrealizedPnl > 0 ? '+' : '') + h.unrealizedPnl.toFixed(0) : '-' }}
+                  </td>
+                  <td class="num" :class="{ pos: h.unrealizedPct > 0, neg: h.unrealizedPct < 0 }">
+                    {{ h.holding ? (h.unrealizedPct * 100).toFixed(2) + '%' : '-' }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="model-note">
+            模型信号会随新 K 线变化；“持仓”表示尚未触发卖点，“空仓”表示等待下一次买点。
+          </div>
+        </section>
+
+        <div class="warn-box overfit compact-warning">
+          <strong>历史表现不等于未来收益。</strong>
+          组合可能只适应特定行情，请把当前状态作为参考信号，并配合自己的仓位和止损纪律。
         </div>
 
-        <div v-if="comboPerf" class="combo-chart-block">
-          <h4>绩效指标</h4>
-          <MetricTable :perf="comboPerf" />
+        <!-- 第四层：净值与评级并排，建立收益与风险的直接联系。 -->
+        <div class="insight-grid">
+          <section class="report-card equity-card">
+            <div class="report-section-head compact">
+              <div>
+                <span class="section-kicker">PERFORMANCE</span>
+                <h4>组合净值与回撤</h4>
+              </div>
+            </div>
+            <EquityChart :equity="store.multiStrategyResult.combined_equity" />
+          </section>
+
+          <section v-if="comboGrade" class="report-card grade-card">
+            <div class="report-section-head compact">
+              <div>
+                <span class="section-kicker">RISK QUALITY</span>
+                <h4>风险评级拆解</h4>
+              </div>
+            </div>
+            <GradeDetails :result="comboGrade" expanded />
+          </section>
         </div>
+
+        <section class="report-card">
+          <div class="report-section-head compact">
+            <div>
+              <span class="section-kicker">STRATEGY BREAKDOWN</span>
+              <h4>各策略表现</h4>
+              <p>比较资金占比、收益、回撤和胜率，识别拖累组合的策略</p>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <PortfolioSummaryTable
+              :results="store.multiStrategyResult.individual_results"
+              :allocation="store.multiStrategyResult.equity_allocation"
+            />
+          </div>
+        </section>
+
+        <details v-if="comboPerf" class="report-card report-disclosure">
+          <summary>
+            <span>
+              <strong>全部绩效指标</strong>
+              <small>夏普、卡玛、胜率、盈亏比等 19 项</small>
+            </span>
+            <span class="disclosure-action">展开查看</span>
+          </summary>
+          <div class="disclosure-body"><MetricTable :perf="comboPerf" /></div>
+        </details>
+
+        <section class="report-card">
+          <div class="report-section-head compact">
+            <div>
+              <span class="section-kicker">RELATIVE VIEW</span>
+              <h4>各策略净值对比</h4>
+            </div>
+          </div>
+          <PortfolioCompareChart :results="store.multiStrategyResult.individual_results" />
+        </section>
 
         <!-- 历史成交与买卖点：重跑到今天后仍展示完整回测过程，而不只显示最后持仓。 -->
-        <div ref="historyTradesRef" class="combo-chart-block history-trades-block">
-          <h4>
-            历史买入卖出（{{ totalTradeCount }} 个成交点）
-            <span class="holdings-hint">按策略分别显示，买入/卖出点标在各自 K 线上</span>
-          </h4>
+        <section class="report-card history-trades-block">
+          <div class="report-section-head">
+            <div>
+              <span class="section-kicker">TRADE HISTORY</span>
+              <h4>历史买入卖出</h4>
+              <p>按策略分别展示成交记录，并在各自 K 线上标出买卖位置</p>
+            </div>
+            <span class="section-badge muted-badge">{{ totalTradeCount }} 个成交点</span>
+          </div>
 
-          <div class="warn-box disclaimer trade-model-note">
+          <div class="model-note trade-model-note">
             这里是历史模拟成交记录，不是当前下单建议。每套策略独立管理自己的分配资金。
           </div>
 
@@ -954,74 +1128,7 @@ const comboGrade = computed(() =>
               </div>
             </details>
           </div>
-        </div>
-
-        <div class="combo-chart-block">
-          <h4>各策略绩效对比</h4>
-          <PortfolioSummaryTable
-            :results="store.multiStrategyResult.individual_results"
-            :allocation="store.multiStrategyResult.equity_allocation"
-          />
-        </div>
-
-        <div class="combo-chart-block">
-          <h4>各策略净值叠加（归一化）</h4>
-          <PortfolioCompareChart
-            :results="store.multiStrategyResult.individual_results"
-          />
-        </div>
-
-        <div class="combo-chart-block">
-          <h4>
-            当前持仓（{{ holdingCount }}/{{ holdings.length }} 在持仓中）
-            <span class="holdings-hint">截至回测结束日的策略信号</span>
-          </h4>
-
-          <!-- 模型仓位免责水印：与上方过拟合警示条互补，这里只强调"持仓≠你真实账户" -->
-          <div class="warn-box disclaimer">
-            ⚠ 表中是<strong>模型仓位</strong>（策略说"该持仓"），<strong>不是你真实账户的持仓</strong>。
-            基于回测结束日收盘价计算，过夜后可能因新 K 线触发买卖而变化。
-          </div>
-
-          <p v-if="holdings.length === 0" class="empty-text">无持仓数据</p>
-          <table v-else class="holdings-table">
-            <thead>
-              <tr>
-                <th>策略</th>
-                <th>标的</th>
-                <th>状态</th>
-                <th class="num">持仓数量</th>
-                <th class="num">成本价</th>
-                <th class="num">市值</th>
-                <th class="num">未实现盈亏</th>
-                <th class="num">收益率</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="h in holdingViews" :key="h.key" :class="h.rowClass">
-                <td>{{ h.strategyLabel }}</td>
-                <td class="sym">{{ h.symbol }}</td>
-                <td>
-                  <span class="status-tag" :class="h.statusClass">
-                    {{ h.statusLabel }}
-                  </span>
-                </td>
-                <td class="num">{{ h.size > 0 ? h.size.toFixed(0) : '-' }}</td>
-                <td class="num">{{ h.holding ? h.avgPrice.toFixed(2) : '-' }}</td>
-                <td class="num">{{ h.holding ? h.marketValue.toFixed(0) : '-' }}</td>
-                <td class="num" :class="{ pos: h.unrealizedPnl > 0, neg: h.unrealizedPnl < 0 }">
-                  {{ h.holding ? (h.unrealizedPnl > 0 ? '+' : '') + h.unrealizedPnl.toFixed(0) : '-' }}
-                </td>
-                <td
-                  class="num"
-                  :class="{ pos: h.unrealizedPct > 0, neg: h.unrealizedPct < 0 }"
-                >
-                  {{ h.holding ? (h.unrealizedPct * 100).toFixed(2) + '%' : '-' }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        </section>
       </div>
     </section>
   </div>
@@ -1335,177 +1442,471 @@ const comboGrade = computed(() =>
 
 /* 多策略组合回测结果区 */
 .combo-result {
-  margin-top: 24px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px 18px;
+  margin-top: 28px;
+  background: linear-gradient(180deg, #141924 0%, #11151e 100%);
+  border: 1px solid #303746;
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+  scroll-margin-top: 16px;
+}
+.combo-result-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 24px 20px;
+  border-bottom: 1px solid rgba(74, 158, 255, 0.18);
+  background:
+    radial-gradient(circle at 8% 0%, rgba(74, 158, 255, 0.13), transparent 32%),
+    rgba(15, 19, 28, 0.76);
+}
+.result-eyebrow,
+.section-kicker {
+  display: block;
+  color: #6eb4ff;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  line-height: 1.3;
 }
 .combo-title {
-  font-size: 15px;
-  font-weight: 600;
-  margin-bottom: 14px;
+  margin-top: 4px;
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.3px;
 }
 .combo-meta {
-  font-size: 12px;
-  color: var(--text-dim);
-  font-weight: 400;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+.combo-meta span {
+  padding: 3px 8px;
+  border: 1px solid rgba(139, 145, 158, 0.2);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.025);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 .combo-loading {
-  padding: 24px;
-  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 54px 24px;
+  color: var(--text-muted);
+}
+.combo-loading strong {
+  color: var(--text);
+  font-size: 15px;
+}
+.combo-loading small {
   color: var(--text-dim);
-  font-size: 13px;
+}
+.loading-dot {
+  width: 10px;
+  height: 10px;
+  margin-bottom: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 6px rgba(74, 158, 255, 0.12);
+  animation: report-pulse 1.2s ease-in-out infinite;
+}
+@keyframes report-pulse {
+  50% { opacity: 0.45; transform: scale(0.8); }
 }
 .combo-content {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 20px;
+  padding: 22px 24px 28px;
 }
-.combo-summary {
+
+/* 第一屏：当前结论 */
+.signal-hero {
   display: flex;
-  gap: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 128px;
+  padding: 22px 24px;
+  border: 1px solid rgba(74, 158, 255, 0.34);
+  border-radius: 12px;
+  background: linear-gradient(120deg, rgba(74, 158, 255, 0.14), rgba(74, 158, 255, 0.025));
+  box-shadow: inset 4px 0 0 var(--accent);
 }
-.combo-stat {
+.signal-hero.tone-mixed {
+  border-color: rgba(150, 118, 255, 0.34);
+  background: linear-gradient(120deg, rgba(132, 96, 220, 0.15), rgba(74, 158, 255, 0.025));
+  box-shadow: inset 4px 0 0 #9676ff;
+}
+.signal-hero.tone-cash {
+  border-color: rgba(24, 160, 88, 0.32);
+  background: linear-gradient(120deg, rgba(24, 160, 88, 0.13), rgba(24, 160, 88, 0.02));
+  box-shadow: inset 4px 0 0 var(--down);
+}
+.signal-copy h4 {
+  margin-top: 8px;
+  color: #f1f4f8;
+  font-size: 25px;
+  font-weight: 750;
+  letter-spacing: -0.4px;
+}
+.signal-copy p {
+  margin-top: 5px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.signal-counts {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.signal-count {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  align-items: center;
+  justify-content: center;
+  width: 92px;
+  min-height: 76px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(8, 11, 17, 0.42);
 }
-.combo-stat .label {
-  font-size: 12px;
-  color: var(--text-dim);
-}
-.combo-stat .value {
-  font-size: 22px;
-  font-weight: 700;
+.count-value {
   font-family: var(--font-mono);
+  font-size: 27px;
+  font-weight: 750;
+  line-height: 1.1;
 }
-.combo-chart-block h4 {
-  font-size: 13px;
-  font-weight: 600;
+.holding-count .count-value { color: #70b7ff; }
+.waiting-count .count-value { color: var(--text-muted); }
+.count-label {
+  margin-top: 5px;
   color: var(--text-muted);
-  margin-bottom: 10px;
+  font-size: 11px;
 }
+
+/* 核心数字 */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(135px, 1fr));
+  gap: 10px;
+}
+.kpi-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 112px;
+  padding: 14px 15px 12px;
+  overflow: hidden;
+  border: 1px solid #2b3240;
+  border-radius: 10px;
+  background: rgba(24, 29, 40, 0.84);
+}
+.kpi-card::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background: #3b4658;
+  content: '';
+}
+.primary-kpi::before { background: var(--accent); }
+.risk-kpi::before { background: var(--warn); }
+.grade-kpi::before { background: #9676ff; }
+.kpi-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+.kpi-value {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 23px;
+  font-weight: 750;
+  line-height: 1.1;
+}
+.kpi-value.neutral { color: #d9e6f5; }
+.risk-kpi .kpi-value { color: var(--warn); }
+.kpi-note {
+  margin-top: auto;
+  padding-top: 8px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.grade-value small {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.72;
+}
+.grade-kpi.grade-S .grade-value { color: #e0b341; }
+.grade-kpi.grade-A .grade-value { color: var(--down); }
+.grade-kpi.grade-B .grade-value { color: var(--accent); }
+.grade-kpi.grade-C .grade-value { color: var(--warn); }
+.grade-kpi.grade-D .grade-value { color: var(--up); }
+
+/* 通用报告卡片 */
+.report-card {
+  padding: 18px 19px;
+  border: 1px solid #2a3140;
+  border-radius: 11px;
+  background: rgba(23, 28, 39, 0.86);
+}
+.priority-card {
+  border-color: rgba(74, 158, 255, 0.3);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+}
+.report-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 15px;
+}
+.report-section-head.compact { margin-bottom: 10px; }
+.report-section-head h4 {
+  margin-top: 3px;
+  color: #edf1f7;
+  font-size: 16px;
+  font-weight: 700;
+}
+.report-section-head p {
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.section-badge {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border: 1px solid rgba(74, 158, 255, 0.35);
+  border-radius: 999px;
+  color: #82beff;
+  background: rgba(74, 158, 255, 0.09);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.muted-badge {
+  border-color: rgba(139, 145, 158, 0.25);
+  color: var(--text-muted);
+  background: rgba(139, 145, 158, 0.06);
+}
+.model-note {
+  margin-top: 12px;
+  padding: 8px 11px;
+  border-radius: 7px;
+  color: #7f8998;
+  background: rgba(8, 11, 17, 0.34);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.table-scroll { overflow-x: auto; }
+.insight-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 0.85fr);
+  gap: 14px;
+  align-items: stretch;
+}
+.equity-card,
+.grade-card { min-width: 0; }
+.equity-card :deep(.equity-chart) { height: 340px; }
+.grade-card :deep(.grade-details) { margin-top: 4px; }
+
+/* 次要信息默认折叠，避免 19 项指标抢占第一屏。 */
+.report-disclosure { padding: 0; }
+.report-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 18px;
+  cursor: pointer;
+  list-style: none;
+}
+.report-disclosure > summary::-webkit-details-marker { display: none; }
+.report-disclosure > summary strong {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+}
+.report-disclosure > summary small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.disclosure-action {
+  color: var(--accent);
+  font-size: 11px;
+}
+.report-disclosure[open] .disclosure-action::before { content: '收起 · '; }
+.report-disclosure[open] > summary { border-bottom: 1px solid var(--border); }
+.disclosure-body { padding: 18px; }
+
 .holdings-hint {
+  margin-left: 6px;
+  color: var(--text-dim);
   font-size: 11px;
   font-weight: 400;
-  color: var(--text-dim);
-  margin-left: 6px;
 }
 .empty-text {
+  padding: 18px 0;
   color: var(--text-dim);
   font-size: 13px;
-  padding: 12px 0;
+  text-align: center;
 }
+
+/* 历史交易 */
 .strategy-trades {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.history-trades-block {
-  scroll-margin-top: 56px;
-}
-.trade-model-note {
-  margin-bottom: 8px;
-}
+.history-trades-block { scroll-margin-top: 18px; }
+.trade-model-note { margin: 0 0 12px; }
 .combined-trades-wrap {
   max-height: 440px;
   overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 1px solid #2b3240;
+  border-radius: 8px;
 }
 .combined-trades-table th {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--bg-panel);
+  background: #171c27;
 }
 .combined-trades-table tr.rejected td {
   opacity: 0.45;
   text-decoration: line-through;
 }
 .strategy-chart-title {
-  margin-top: 20px;
+  margin: 20px 0 10px;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 .kline-missing {
   padding: 16px 12px;
   border-top: 1px solid var(--border);
 }
 .strategy-trade-group {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
   overflow: hidden;
+  border: 1px solid #2b3240;
+  border-radius: 8px;
 }
 .strategy-trade-group summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
-  color: var(--text-muted);
-  font-size: 13px;
+  padding: 11px 13px;
+  color: #c4cad3;
+  background: rgba(11, 14, 21, 0.28);
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  background: var(--bg-panel);
 }
-.strategy-trade-group summary:hover {
-  background: var(--bg-hover);
-}
+.strategy-trade-group summary:hover { background: rgba(74, 158, 255, 0.06); }
 .strategy-trade-group .trade-count {
   flex: none;
   color: var(--text-dim);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 400;
 }
 .strategy-kline {
-  border-top: 1px solid var(--border);
   padding: 10px 6px 0;
+  border-top: 1px solid var(--border);
 }
 .strategy-trade-group :deep(.trade-table-wrap) {
   max-height: 360px;
-  border-top: 1px solid var(--border);
   overflow: auto;
+  border-top: 1px solid var(--border);
 }
+
+/* 表格强调状态而不是所有数字一起抢眼。 */
 .holdings-table {
   width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
 }
 .holdings-table th,
 .holdings-table td {
-  padding: 7px 10px;
+  padding: 10px 11px;
+  border-bottom: 1px solid rgba(42, 46, 58, 0.72);
   text-align: left;
-  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
 }
 .holdings-table th {
-  color: var(--text-dim);
-  font-size: 12px;
-  font-weight: 600;
+  color: #717a88;
+  background: rgba(10, 13, 19, 0.28);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
 }
+.holdings-table tbody tr { transition: background 0.15s ease; }
+.holdings-table tbody tr:hover { background: rgba(74, 158, 255, 0.045); }
 .holdings-table .num {
   text-align: right;
   font-family: var(--font-mono);
 }
 .holdings-table .sym {
+  color: #a9cbed;
   font-family: var(--font-mono);
   font-weight: 600;
 }
-.holdings-table tr.cleared {
-  opacity: 0.5;
+.strategy-name {
+  color: #dfe4ea;
+  font-weight: 600;
 }
+.holdings-table tr.cleared { opacity: 0.54; }
 .status-tag {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
 }
-.status-tag.holding {
+.status-tag.win {
+  color: #ff777b;
   background: rgba(239, 65, 70, 0.12);
-  color: var(--up);
+  border: 1px solid rgba(239, 65, 70, 0.26);
 }
-.status-tag.cleared {
-  background: var(--border);
-  color: var(--text-dim);
+.status-tag.lose {
+  color: #f5b758;
+  background: rgba(240, 160, 32, 0.12);
+  border: 1px solid rgba(240, 160, 32, 0.25);
+}
+.status-tag.wait {
+  color: #8893a2;
+  background: rgba(139, 145, 158, 0.09);
+  border: 1px solid rgba(139, 145, 158, 0.2);
+}
+.holdings-table tr.row-win { background: rgba(239, 65, 70, 0.025); }
+.holdings-table tr.row-lose { background: rgba(240, 160, 32, 0.025); }
+
+@media (max-width: 1100px) {
+  .kpi-grid { grid-template-columns: repeat(3, minmax(140px, 1fr)); }
+  .insight-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .combo-result-header,
+  .signal-hero { flex-direction: column; }
+  .combo-result-header { padding: 18px; }
+  .combo-content { padding: 16px; }
+  .signal-hero { align-items: stretch; padding: 18px; }
+  .signal-counts { width: 100%; }
+  .signal-count { flex: 1; width: auto; }
+  .kpi-grid { grid-template-columns: repeat(2, minmax(125px, 1fr)); }
+  .report-card { padding: 15px; }
 }
 
 /* 组合卡片 / multi 视觉差异 */
@@ -1533,8 +1934,9 @@ const comboGrade = computed(() =>
 /* 保存组合按钮（结果区右上） */
 .save-combo-btn {
   font-size: 12px;
-  padding: 5px 12px;
-  margin-left: 12px;
+  flex-shrink: 0;
+  padding: 7px 13px;
+  margin: 0;
   background: linear-gradient(135deg, #f59e0b, #ea580c);
   border: 1px solid #f59e0b;
   color: #fff;
@@ -1564,6 +1966,11 @@ const comboGrade = computed(() =>
   color: #f0a020;
   margin-bottom: 14px;
 }
+.compact-warning {
+  margin: 0;
+  border: 1px solid rgba(240, 160, 32, 0.2);
+  border-left: 3px solid var(--warn);
+}
 .warn-box.disclaimer {
   background: rgba(240, 160, 32, 0.06);
   border: 1px dashed rgba(240, 160, 32, 0.4);
@@ -1589,26 +1996,6 @@ const comboGrade = computed(() =>
 .rerun-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-/* 持仓三态 */
-.status-tag.win {
-  background: rgba(24, 160, 88, 0.18);
-  color: var(--down);
-}
-.status-tag.lose {
-  background: rgba(240, 160, 32, 0.18);
-  color: #f0a020;
-}
-.status-tag.wait {
-  background: var(--border);
-  color: var(--text-dim);
-}
-.holdings-table tr.row-win {
-  background: rgba(24, 160, 88, 0.04);
-}
-.holdings-table tr.row-lose {
-  background: rgba(240, 160, 32, 0.05);
 }
 
 /* 保存组合弹窗 */
