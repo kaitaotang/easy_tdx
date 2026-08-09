@@ -109,6 +109,17 @@ export interface Trade {
   slippage: number
   pnl: number
   rejected: boolean
+  /** 信号来源：strategy=策略信号，stop=ATR止损/止盈触发。 */
+  source?: 'strategy' | 'stop' | string
+  /** 成交时关联的止损/移动止损参考价。 */
+  stop_loss?: number | null
+  /** 成交时关联的止盈参考价。 */
+  take_profit?: number | null
+  /** 多策略组合回测附带的买点波动诊断；卖出记录为空。 */
+  atr_pct?: number | null
+  atr_percentile?: number | null
+  realized_vol?: number | null
+  volatility_regime?: 'low' | 'normal' | 'high' | null
 }
 
 export interface BacktestResult {
@@ -179,6 +190,43 @@ export interface PortfolioResult {
   individual_results: Record<string, BacktestResult>
   equity_allocation: Record<string, number>
   combined_equity: EquityPoint[]
+  /** 多策略组合的 ATR/历史波动关系诊断；普通多标的组合可能不返回。 */
+  volatility_profiles?: Record<string, VolatilityProfile>
+  /** 原始等权组合与历史信息风险加权虚拟组合的对照实验。 */
+  adaptive_comparison?: AdaptiveComparison
+}
+
+export interface VolatilityProfile {
+  strategy_label: string
+  symbol: string
+  current_atr_pct: number
+  current_realized_vol: number
+  current_regime: 'low' | 'normal' | 'high'
+  atr_percentile: number
+  low_vol_annual_return: number
+  high_vol_annual_return: number
+  low_vol_edge: number
+  relationship: '低波动更有利' | '高波动更有利' | '关系不明显'
+  low_regime_observations: number
+  high_regime_observations: number
+}
+
+export interface AdaptiveMetrics {
+  total_return: number
+  annual_return: number
+  max_drawdown: number
+  sharpe: number
+}
+
+export interface AdaptiveComparison {
+  method: string
+  lookback: number
+  max_strategy_weight: number
+  max_total_exposure: number
+  baseline: AdaptiveMetrics
+  adaptive: AdaptiveMetrics
+  delta: AdaptiveMetrics
+  note: string
 }
 
 // ── 参数网格寻优（Phase 4） ──────────────────────────────────────────────────

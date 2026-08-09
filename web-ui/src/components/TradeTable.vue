@@ -16,6 +16,13 @@ function fmtNum(v: number, digits = 2): string {
 function directionLabel(direction: Trade['direction']): string {
   return direction === 'BUY' ? '买入' : '卖出'
 }
+function sourceLabel(trade: Trade): string {
+  if (trade.source === 'stop') return '风控触发'
+  if (trade.stop_loss != null || trade.take_profit != null) {
+    return trade.direction === 'BUY' ? '建仓+风控' : '移动止损'
+  }
+  return '策略信号'
+}
 </script>
 
 <template>
@@ -26,8 +33,11 @@ function directionLabel(direction: Trade['direction']): string {
         <tr>
           <th>日期</th>
           <th>方向</th>
+          <th>信号</th>
           <th class="num">数量</th>
           <th class="num">价格</th>
+          <th class="num">止损参考</th>
+          <th class="num">止盈参考</th>
           <th class="num">手续费</th>
           <th class="num">盈亏</th>
         </tr>
@@ -36,8 +46,17 @@ function directionLabel(direction: Trade['direction']): string {
         <tr v-for="(t, i) in trades" :key="i" :class="{ rejected: t.rejected }">
           <td>{{ fmtDate(t.datetime) }}</td>
           <td :class="t.direction">{{ directionLabel(t.direction) }}</td>
+          <td>
+            <span class="source" :class="{ risk: t.source === 'stop' || t.stop_loss != null }">
+              {{ sourceLabel(t) }}
+            </span>
+          </td>
           <td class="num">{{ fmtNum(t.size, 0) }}</td>
           <td class="num">{{ fmtNum(t.price, 3) }}</td>
+          <td class="num risk-price">{{ t.stop_loss == null ? '-' : fmtNum(t.stop_loss, 3) }}</td>
+          <td class="num risk-price take-profit">
+            {{ t.take_profit == null ? '-' : fmtNum(t.take_profit, 3) }}
+          </td>
           <td class="num muted">{{ fmtNum(t.commission, 2) }}</td>
           <td class="num" :class="{ pos: t.pnl > 0, neg: t.pnl < 0 }">
             {{ t.pnl === 0 ? '-' : fmtNum(t.pnl, 2) }}
@@ -90,6 +109,20 @@ function directionLabel(direction: Trade['direction']): string {
 .SELL {
   color: var(--down);
   font-weight: 600;
+}
+.source {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.source.risk {
+  color: #f0b35a;
+  font-weight: 600;
+}
+.risk-price {
+  color: #f0b35a;
+}
+.take-profit {
+  color: var(--up);
 }
 .pos {
   color: var(--up);

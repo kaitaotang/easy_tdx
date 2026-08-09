@@ -44,6 +44,19 @@ class HoldStrategy(Strategy):
         pass
 
 
+class LateBuyStrategy(Strategy):
+    """指标预热后买入，供 ATR/波动诊断测试。"""
+
+    def init(self) -> None:
+        pass
+
+    def next(self) -> None:
+        if self._bar_index == 45 and self.position["size"] == 0:
+            self.buy(size=0)
+        elif self._bar_index == 80 and self.position["size"] > 0:
+            self.sell(size=0)
+
+
 def _make_df(n: int = 100, seed: int = 42, start: str = "2024-01-01") -> pd.DataFrame:
     """生成随机 OHLCV DataFrame（与 test_portfolio_engine 同构造方式）。"""
     rng = np.random.default_rng(seed)
@@ -256,3 +269,39 @@ class TestMultiStrategyEngine:
         assert "individual_results" in d
         assert "combined_equity" in d
         assert isinstance(d["individual_results"]["A@SH:601088"], dict)
+
+    def test_volatility_profile_and_adaptive_comparison(self) -> None:
+        """组合结果应同时返回逐策略波动诊断和等权/自适应对照。"""
+        slots = [
+            StrategySlot("A", "SH:601088", LateBuyStrategy(), _make_df(140, seed=11)),
+            StrategySlot("B", "SZ:000001", LateBuyStrategy(), _make_df(140, seed=22)),
+        ]
+        result = MultiStrategyEngine(slots, total_cash=1_000_000).run()
+
+        assert set(result.volatility_profiles) == {"A@SH:601088", "B@SZ:000001"}
+        profile = result.volatility_profiles["A@SH:601088"]
+        assert profile["relationship"] in {"低波动更有利", "高波动更有利", "关系不明显"}
+        assert 0 <= profile["atr_percentile"] <= 1
+
+        comparison = result.adaptive_comparison
+        assert comparison["method"] == "past_only_volatility_aware"
+        for group in ("baseline", "adaptive", "delta"):
+            assert set(comparison[group]) == {
+                "total_return",
+                "annual_return",
+                "max_drawdown",
+                "sharpe",
+            }
+        assert comparison["baseline"]["total_return"] == result.total_performance["total_return"]
+
+    def test_buy_trade_contains_past_only_volatility_diagnostic(self) -> None:
+        """预热后的 BUY 成交应附带当时可知的 ATR%、分位和波动区间。"""
+        slot = StrategySlot(
+            "A", "SH:601088", LateBuyStrategy(), _make_df(120, seed=31)
+        )
+        result = MultiStrategyEngine([slot], total_cash=500_000).run()
+        trades = result.individual_results["A@SH:601088"].trades
+        buy = trades.loc[trades["direction"] == "BUY"].iloc[0]
+        assert np.isfinite(float(buy["atr_pct"]))
+        assert np.isfinite(float(buy["atr_percentile"]))
+        assert buy["volatility_regime"] in {"low", "normal", "high"}

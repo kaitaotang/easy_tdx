@@ -13,10 +13,10 @@ import MetricTable from '../components/MetricTable.vue'
 import StrategyPicker from '../components/StrategyPicker.vue'
 import SymbolPicker from '../components/SymbolPicker.vue'
 import TradeTable from '../components/TradeTable.vue'
-import { formatError, saveStrategy } from '../api'
+import { fetchSavedStrategy, formatError, saveStrategy, updateSavedStrategy } from '../api'
 import { toFullSymbol } from '../market'
 import { gradePerformance } from '../grading'
-import type { Category, ExecutionMode } from '../types'
+import type { Category, ExecutionMode, SavedStrategyCreate } from '../types'
 import { useBacktestStore } from '../stores/backtest'
 
 const store = useBacktestStore()
@@ -32,7 +32,10 @@ const category = ref<Category>('DAY')
 function isoDaysFromNow(days: number): string {
   const d = new Date()
   d.setDate(d.getDate() + days)
-  return d.toISOString().slice(0, 10)
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 const startDate = ref('2020-01-06')
 const endDate = ref(isoDaysFromNow(0))
@@ -44,6 +47,12 @@ const cash = ref(1000000)
 const commission = ref(0.0003)
 const slippage = ref(0)
 const execution = ref<ExecutionMode>('next_open')
+// 从策略库载入时保存原记录 id；后续保存将 PATCH 覆盖这条记录。
+const loadedStrategyId = ref<string | null>(null)
+const loadedStrategyName = ref('')
+const loadedStrategyTags = ref<string[]>([])
+const loadedStrategyNotes = ref('')
+const loadedRecordReady = ref(false)
 
 // 成交价模式（精简为 开盘价/收盘价）
 const EXECUTIONS: { value: ExecutionMode; label: string }[] = [
@@ -79,18 +88,61 @@ onMounted(async () => {
   const qStartDate = route.query.startDate as string | undefined
   const qEndDate = route.query.endDate as string | undefined
   const qCategory = route.query.category as Category | undefined
+  const qSavedId = route.query.savedId as string | undefined
+  const qSavedName = route.query.savedName as string | undefined
+  const qAutoRun = route.query.autoRun as string | undefined
   if (qSymbol) code.value = qSymbol
   if (qStartDate) startDate.value = qStartDate
   if (qEndDate) endDate.value = qEndDate
   if (qCategory) category.value = qCategory
+  if (qSavedId) loadedStrategyId.value = qSavedId
+  if (qSavedName) loadedStrategyName.value = qSavedName
+
+  // 用原记录补齐名称、标签、备注和交易成本配置。保存时默认保留这些内容，
+  // 避免一次“重跑并更新”意外把用户原来的备注/标签清空。
+  if (qSavedId) {
+    try {
+      const saved = await fetchSavedStrategy(qSavedId)
+      loadedStrategyName.value = saved.name
+      loadedStrategyTags.value = saved.tags
+      loadedStrategyNotes.value = saved.notes
+      loadedRecordReady.value = true
+      const config = saved.trade_config || {}
+      const savedCash = Number(config.cash)
+      const savedCommission = Number(config.commission)
+      const savedSlippage = Number(config.slippage)
+      if (Number.isFinite(savedCash) && savedCash > 0) cash.value = savedCash
+      if (Number.isFinite(savedCommission) && savedCommission >= 0) {
+        commission.value = savedCommission
+      }
+      if (Number.isFinite(savedSlippage) && savedSlippage >= 0) slippage.value = savedSlippage
+      if (config.execution === 'next_open' || config.execution === 'next_close') {
+        execution.value = config.execution
+      }
+    } catch (e) {
+      store.error = `载入策略库记录失败：${formatError(e)}`
+    }
+  }
+
+  // 策略库“载入”带 autoRun=1：行情参数回填完成后自动取行情并重跑。
+  if (qAutoRun === '1') {
+    await nextTick()
+    const succeeded = await onRun()
+    if (succeeded && loadedRecordReady.value) {
+      await updateLoadedStrategyAfterAutoRun()
+    } else if (succeeded && qSavedId) {
+      store.error = '回测已完成，但原策略记录未成功载入，因此没有自动覆盖旧记录。'
+    }
+  }
 })
 
 // 取行情 + 回测 串联（点击「开始回测」触发）
-async function onRun() {
-  store.error = ''
+async function onRun(): Promise<boolean> {
+  // 先清掉旧结果，避免取行情失败时误把上一次结果写回策略库。
+  store.clearResult()
   // 1. 先取行情（SymbolPicker.loadBars 会校验并填充 store.ohlcv）
   const ok = await symbolPicker.value?.loadBars()
-  if (!ok) return // 校验/取数失败，错误已在 store.error
+  if (!ok) return false // 校验/取数失败，错误已在 store.error
   // 2. 再回测
   await store.run({
     strategy: strategy.value,
@@ -100,6 +152,7 @@ async function onRun() {
     slippage: slippage.value,
     execution: execution.value,
   })
+  return store.result !== null
 }
 
 // ── 保存策略（把当前结果 + 配置 + 上下文存进策略库）──────────────────────────
@@ -122,11 +175,77 @@ const grade = computed(() =>
 )
 
 function openSaveForm() {
-  saveName.value = `${strategyLabel.value} · ${code.value}`
-  saveTags.value = ''
-  saveNotes.value = ''
+  saveName.value = loadedStrategyName.value || `${strategyLabel.value} · ${code.value}`
+  saveTags.value = loadedStrategyTags.value.join(',')
+  saveNotes.value = loadedStrategyNotes.value
   saveMsg.value = ''
   showSaveForm.value = true
+}
+
+function buildSavedPayload(
+  name: string,
+  tags: string[],
+  notes: string,
+): SavedStrategyCreate {
+  if (!store.result) throw new Error('没有可保存的回测结果')
+  return {
+    name,
+    kind: 'single',
+    strategy: strategy.value,
+    strategy_label: strategyLabel.value,
+    params: params.value,
+    context: {
+      symbol: toFullSymbol(code.value),
+      category: category.value,
+      start_date: startDate.value,
+      end_date: endDate.value,
+    },
+    trade_config: {
+      cash: cash.value,
+      commission: commission.value,
+      min_commission: 5,
+      stamp_tax: 0.001,
+      slippage: slippage.value,
+      execution: execution.value,
+    },
+    snapshot: {
+      total_return: store.result.performance.total_return,
+      annual_return: store.result.performance.annual_return,
+      max_drawdown: store.result.performance.max_drawdown,
+      sharpe: store.result.performance.sharpe,
+      win_rate: store.result.performance.win_rate,
+      trades_count: store.result.performance.total_trades,
+    },
+    tags,
+    notes,
+  }
+}
+
+function applySavedRecord(saved: Awaited<ReturnType<typeof updateSavedStrategy>>) {
+  loadedStrategyId.value = saved.id
+  loadedStrategyName.value = saved.name
+  loadedStrategyTags.value = saved.tags
+  loadedStrategyNotes.value = saved.notes
+  loadedRecordReady.value = true
+}
+
+/** 策略库载入后的自动重跑成功时，立即用今天的结果覆盖原记录。 */
+async function updateLoadedStrategyAfterAutoRun() {
+  const id = loadedStrategyId.value
+  if (!id || !store.result) return
+  const name = loadedStrategyName.value || `${strategyLabel.value} · ${code.value}`
+  try {
+    const payload = buildSavedPayload(
+      name,
+      loadedStrategyTags.value,
+      loadedStrategyNotes.value,
+    )
+    const saved = await updateSavedStrategy(id, payload)
+    applySavedRecord(saved)
+    saveMsg.value = `✓ 已重跑到 ${endDate.value} 并更新策略库`
+  } catch (e) {
+    store.error = `回测已完成，但更新策略库失败：${formatError(e)}`
+  }
 }
 
 async function onSave() {
@@ -134,41 +253,17 @@ async function onSave() {
   saving.value = true
   saveMsg.value = ''
   try {
-    await saveStrategy({
-      name: saveName.value.trim(),
-      kind: 'single',
-      strategy: strategy.value,
-      strategy_label: strategyLabel.value,
-      params: params.value,
-      context: {
-        symbol: toFullSymbol(code.value),
-        category: category.value,
-        start_date: startDate.value,
-        end_date: endDate.value,
-      },
-      trade_config: {
-        cash: cash.value,
-        commission: commission.value,
-        min_commission: 5,
-        stamp_tax: 0.001,
-        slippage: slippage.value,
-        execution: execution.value,
-      },
-      snapshot: {
-        total_return: store.result.performance.total_return,
-        annual_return: store.result.performance.annual_return,
-        max_drawdown: store.result.performance.max_drawdown,
-        sharpe: store.result.performance.sharpe,
-        win_rate: store.result.performance.win_rate,
-        trades_count: store.result.performance.total_trades,
-      },
-      tags: saveTags.value
-        .split(/[,，]/)
-        .map((t) => t.trim())
-        .filter(Boolean),
-      notes: saveNotes.value,
-    })
-    saveMsg.value = '✓ 已保存到策略库'
+    const wasUpdate = Boolean(loadedStrategyId.value)
+    const tags = saveTags.value
+      .split(/[,，]/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+    const payload = buildSavedPayload(saveName.value.trim(), tags, saveNotes.value)
+    const saved = loadedStrategyId.value
+      ? await updateSavedStrategy(loadedStrategyId.value, payload)
+      : await saveStrategy(payload)
+    applySavedRecord(saved)
+    saveMsg.value = wasUpdate ? '✓ 已更新策略库' : '✓ 已保存到策略库'
     showSaveForm.value = false
   } catch (e) {
     saveMsg.value = `保存失败：${formatError(e)}`
@@ -247,7 +342,9 @@ async function onSave() {
 
       <div v-if="store.result" class="report-content">
         <div class="result-toolbar">
-          <button class="ghost" @click="openSaveForm">💾 保存策略</button>
+          <button class="ghost" @click="openSaveForm">
+            💾 {{ loadedStrategyId ? '更新已保存策略' : '保存策略' }}
+          </button>
           <span v-if="saveMsg" class="save-msg">{{ saveMsg }}</span>
         </div>
 
@@ -281,9 +378,9 @@ async function onSave() {
     <!-- 保存策略对话框 -->
     <div v-if="showSaveForm" class="modal-overlay" @click.self="showSaveForm = false">
       <div class="modal">
-        <h3>保存到策略库</h3>
+        <h3>{{ loadedStrategyId ? '更新策略库记录' : '保存到策略库' }}</h3>
         <p class="modal-desc">
-          将当前策略 + 标的上下文 + 成绩快照存下，下次可在「策略库」载入或重跑。
+          将当前策略 + 标的上下文 + 成绩快照{{ loadedStrategyId ? '更新到原记录' : '存下' }}，下次可在「策略库」载入或重跑。
         </p>
         <div class="field">
           <label>名称</label>
@@ -304,7 +401,7 @@ async function onSave() {
         <div class="modal-actions">
           <button class="ghost" :disabled="saving" @click="showSaveForm = false">取消</button>
           <button class="primary" :disabled="saving || !saveName.trim()" @click="onSave">
-            {{ saving ? '保存中…' : '保存' }}
+            {{ saving ? '保存中…' : loadedStrategyId ? '更新' : '保存' }}
           </button>
         </div>
       </div>

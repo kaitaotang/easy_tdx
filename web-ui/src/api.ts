@@ -332,6 +332,20 @@ export async function renameSavedStrategy(id: string, name: string): Promise<Sav
   return (await resp.json()) as SavedStrategy
 }
 
+/** 更新已保存策略的完整内容（保留原 id，用于重跑后覆盖旧记录）。 */
+export async function updateSavedStrategy(
+  id: string,
+  req: SavedStrategyCreate,
+): Promise<SavedStrategy> {
+  const resp = await fetch(`${BASE}/strategies/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!resp.ok) await throwError(resp)
+  return (await resp.json()) as SavedStrategy
+}
+
 /** 删除一条已保存策略。 */
 export async function deleteSavedStrategy(id: string): Promise<void> {
   const resp = await fetch(`${BASE}/strategies/${id}`, { method: 'DELETE' })

@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import math
+
 from easy_tdx.backtest.strategies.registry import (
     Param,
     ParametrizedStrategy,
@@ -552,6 +554,100 @@ class AtrBreakoutStrategy(ParametrizedStrategy):
         if close >= upper and self.position["size"] == 0:
             self.buy()
         elif close <= lower and self.position["size"] > 0:
+            self.sell()
+
+
+# ── ATR 趋势风控（操作版） ─────────────────────────────────────────────────────
+
+
+@register_strategy(
+    name="atr_trend_risk",
+    label="ATR 趋势风控",
+    description=(
+        "价格突破均线+ATR通道时买入；用初始ATR止损、可选ATR止盈和移动ATR止损辅助卖出。"
+        "ATR只负责风险距离，不把低波动硬当成买入条件。默认止损2×ATR、移动止损2.5×ATR，"
+        "成交表会显示参考价。"
+    ),
+)
+class AtrTrendRiskStrategy(ParametrizedStrategy):
+    """适合人工执行的 ATR 趋势策略。
+
+    买入条件是趋势突破，而不是“ATR 越低越买”。买入信号会注册初始止损和可选
+    止盈；持仓后用最高价减 ``trailing_atr × ATR`` 的移动线保护利润。这样回测
+    的买卖点仍然由趋势条件决定，ATR 只负责把风险距离标准化到不同价格和波动
+    的股票上。
+    """
+
+    params = [
+        Param("trend_period", int, default=50, min_value=10, max_value=250, label="趋势均线周期"),
+        Param("atr_period", int, default=14, min_value=5, max_value=60, label="ATR周期"),
+        Param("entry_atr", float, default=0.5, min_value=0.0, max_value=4.0, label="突破ATR倍数"),
+        Param("stop_atr", float, default=2.0, min_value=0.5, max_value=6.0, label="初始止损ATR倍数"),
+        Param(
+            "trailing_atr",
+            float,
+            default=2.5,
+            min_value=0.5,
+            max_value=8.0,
+            label="移动止损ATR倍数",
+        ),
+        Param(
+            "take_profit_atr",
+            float,
+            default=0.0,
+            min_value=0.0,
+            max_value=10.0,
+            label="止盈ATR倍数（0=关闭）",
+        ),
+    ]
+
+    def init(self) -> None:
+        self.trend = self.I(MA, self.data.close, self.p["trend_period"])
+        self.atr = self.I(
+            ATR,
+            self.data.close,
+            self.data.high,
+            self.data.low,
+            self.p["atr_period"],
+        )
+        self._highest_since_entry: float | None = None
+
+    def next(self) -> None:
+        i = self._bar_index
+        close = self.data.close[0]
+        atr = self.atr[i]
+        trend = self.trend[i]
+        if not all(math.isfinite(v) for v in (close, atr, trend)) or atr <= 0:
+            return
+
+        if self.position["size"] <= 0:
+            self._highest_since_entry = None
+            if i == 0:
+                return
+            previous_close = self.data.close[-1]
+            if not math.isfinite(previous_close):
+                return
+
+            upper = trend + self.p["entry_atr"] * atr
+            # 用“突破且收盘继续走强”确认，避免均线长期上方时因严格 cross 而错过首个买点。
+            if close >= upper and close > previous_close:
+                take_profit = None
+                if self.p["take_profit_atr"] > 0:
+                    take_profit = close + self.p["take_profit_atr"] * atr
+                self._highest_since_entry = close
+                self.buy(
+                    stop_loss=close - self.p["stop_atr"] * atr,
+                    take_profit=take_profit,
+                )
+            return
+
+        self._highest_since_entry = max(self._highest_since_entry or close, self.data.high[0])
+        trailing_stop = self._highest_since_entry - self.p["trailing_atr"] * atr
+        if close <= trailing_stop:
+            # 记录触发时的移动止损线，成交仍按回测 execution（通常下一根开盘），
+            # 因而这个价格是人工操作参考价，不是假设能精确成交的未来价格。
+            self.sell(stop_loss=float(trailing_stop))
+        elif close < trend:
             self.sell()
 
 

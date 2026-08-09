@@ -23,6 +23,7 @@ __all__ = [
     "SavedStrategy",
     "SavedStrategyCreate",
     "SavedStrategyRename",
+    "SavedStrategyUpdate",
     "SavedStrategyListResponse",
     "MultiStrategyItem",
     "MultiStrategyBacktestRequest",
@@ -313,6 +314,32 @@ class SavedStrategyRename(BaseModel):
     @classmethod
     def strip_name(cls, data: Any) -> Any:
         """先去除首尾空白，再执行长度校验。"""
+        if isinstance(data, dict) and isinstance(data.get("name"), str):
+            return {**data, "name": data["name"].strip()}
+        return data
+
+
+class SavedStrategyUpdate(BaseModel):
+    """更新已保存策略的内容。
+
+    所有字段均可选，以兼容原有 PATCH 改名接口；前端重跑后会提交完整
+    的策略配置、最新日期上下文和最新绩效快照，从而覆盖原记录而不是新增一条。
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    kind: Literal["single", "portfolio", "multi"] | None = None
+    strategy: str | None = None
+    strategy_label: str | None = None
+    params: dict[str, Any] | None = None
+    context: dict[str, Any] | None = None
+    trade_config: dict[str, Any] | None = None
+    snapshot: dict[str, Any] | None = None
+    tags: list[str] | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def strip_name(cls, data: Any) -> Any:
         if isinstance(data, dict) and isinstance(data.get("name"), str):
             return {**data, "name": data["name"].strip()}
         return data

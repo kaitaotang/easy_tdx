@@ -26,7 +26,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
@@ -63,12 +63,16 @@ class MultiStrategyResult:
         equity_allocation: 每个槽位的资金分配比例（均分时各 1/N）。
         combined_equity: 组合整体净值曲线（各槽位按日期并集 ffill 对齐后求和），
             列: datetime / total / drawdown / drawdown_pct。
+        volatility_profiles: 每个策略的 ATR/实现波动率和低高波动收益关系诊断。
+        adaptive_comparison: 原始等权和历史信息风险加权虚拟组合的对照指标。
     """
 
     total_performance: dict[str, float]
     individual_results: dict[str, BacktestResult]
     equity_allocation: dict[str, float]
     combined_equity: pd.DataFrame
+    volatility_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    adaptive_comparison: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +80,8 @@ class MultiStrategyResult:
             "individual_results": {k: v.to_dict() for k, v in self.individual_results.items()},
             "equity_allocation": self.equity_allocation,
             "combined_equity": self.combined_equity.to_dict(orient="records"),
+            "volatility_profiles": self.volatility_profiles,
+            "adaptive_comparison": self.adaptive_comparison,
         }
 
 
@@ -144,12 +150,22 @@ class MultiStrategyEngine:
         equity_pct = {k: v / total_alloc if total_alloc > 0 else 0 for k, v in allocations.items()}
         combined_equity = self._build_combined_equity(individual_results, allocations)
         total_perf = self._aggregate_performance(individual_results, allocations, combined_equity)
+        from easy_tdx.backtest.volatility_allocator import build_volatility_comparison
+
+        volatility_profiles, adaptive_comparison = build_volatility_comparison(
+            self._strategies,
+            individual_results,
+            self._total_cash,
+            total_perf,
+        )
 
         return MultiStrategyResult(
             total_performance=total_perf,
             individual_results=individual_results,
             equity_allocation=equity_pct,
             combined_equity=combined_equity,
+            volatility_profiles=volatility_profiles,
+            adaptive_comparison=adaptive_comparison,
         )
 
     def _aggregate_performance(

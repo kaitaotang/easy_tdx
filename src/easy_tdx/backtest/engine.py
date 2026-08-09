@@ -215,6 +215,11 @@ class BacktestEngine:
                 slippage_model=self._slippage_model,
             )
             for t in sub_trades:
+                # ExecutionModel 可能将一笔信号拆成多笔成交；每笔都保留
+                # 原始信号的来源和 ATR 风控参考价，供前端操作复核。
+                t.source = signal.source
+                t.stop_loss = signal.stop_loss
+                t.take_profit = signal.take_profit
                 if not t.rejected:
                     if t.direction == "BUY":
                         cash -= t.size * t.price + t.commission + t.slippage
@@ -385,6 +390,8 @@ class BacktestEngine:
                         size=0,  # full position close
                         price=trigger_price,
                         source="stop",  # 标记为止损/止盈触发，延迟到下一根成交
+                        stop_loss=cond.stop_loss,
+                        take_profit=cond.take_profit,
                     )
                 )
             else:
@@ -480,6 +487,9 @@ class BacktestEngine:
                     "pnl",
                     "cost_basis",
                     "rejected",
+                    "source",
+                    "stop_loss",
+                    "take_profit",
                 ]
             )
 
@@ -494,6 +504,9 @@ class BacktestEngine:
                 "pnl": t.pnl,
                 "cost_basis": t.cost_basis,
                 "rejected": t.rejected,
+                "source": t.source,
+                "stop_loss": t.stop_loss,
+                "take_profit": t.take_profit,
             }
             for t in trades
         ]
@@ -525,7 +538,11 @@ class BacktestEngine:
                     "commission",
                     "slippage",
                     "pnl",
+                    "cost_basis",
                     "rejected",
+                    "source",
+                    "stop_loss",
+                    "take_profit",
                 ]
             ),
             positions=pd.DataFrame(

@@ -3,7 +3,7 @@
 设计要点：
 - 单文件 SQLite，落在项目统一配置目录（``~/.easy_tdx/strategies.db``，
   随 ``EASY_TDX_CONFIG_DIR`` 环境变量走），与 ``config.py`` 同约定。
-- 提供加入 / 列出 / 查看 / 改名 / 删除，组合名称可在策略库中直接维护。
+- 提供加入 / 列出 / 查看 / 更新 / 改名 / 删除，组合名称可在策略库中直接维护。
 - 线程安全：每个公共方法内部 ``with sqlite3.connect(...)`` 短连接，配合
   ``check_same_thread=False`` + 写操作串行（SQLite 单写者锁兜底）。Web 后台
   任务在 ThreadPool 内调用，故默认 ``check_same_thread=False``。
@@ -221,6 +221,57 @@ class StrategyStore:
             )
             if cur.rowcount == 0:
                 return None
+            row = conn.execute("SELECT * FROM strategies WHERE id = ?", (strategy_id,)).fetchone()
+        return SavedStrategy.from_row(row) if row else None
+
+    def update(self, strategy_id: str, **fields: Any) -> SavedStrategy | None:
+        """更新策略内容并保留原 id/创建时间。
+
+        ``fields`` 只接受 SavedStrategy 的可编辑字段；未传字段保持原值。
+        JSON 字段统一在这里序列化，避免路由层和数据库层出现两套更新逻辑。
+        """
+        allowed = {
+            "name",
+            "kind",
+            "strategy",
+            "strategy_label",
+            "params",
+            "context",
+            "trade_config",
+            "snapshot",
+            "tags",
+            "notes",
+        }
+        # PATCH 中的 null 视为“未提供”，避免把 JSON 字段写成 SQL NULL 后
+        # 破坏 SavedStrategy 的 dict/list 响应契约。
+        updates = {
+            key: value for key, value in fields.items() if key in allowed and value is not None
+        }
+        if not updates:
+            return self.get(strategy_id)
+        if "name" in updates:
+            clean_name = str(updates["name"]).strip()
+            if not clean_name:
+                raise ValueError("策略名称不能为空")
+            updates["name"] = clean_name
+
+        json_fields = {"params", "context", "trade_config", "snapshot", "tags"}
+        assignments: list[str] = []
+        values: list[Any] = []
+        for key, value in updates.items():
+            assignments.append(f"{key} = ?")
+            values.append(
+                json.dumps(value, ensure_ascii=False) if key in json_fields else value
+            )
+        now = _now_iso()
+        assignments.append("updated_at = ?")
+        values.extend([now, strategy_id])
+
+        with _write_lock, self._connect() as conn:
+            conn.execute(
+                f"UPDATE strategies SET {', '.join(assignments)} WHERE id = ?",
+                values,
+            )
             row = conn.execute("SELECT * FROM strategies WHERE id = ?", (strategy_id,)).fetchone()
         return SavedStrategy.from_row(row) if row else None
 

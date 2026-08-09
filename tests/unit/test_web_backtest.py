@@ -60,6 +60,7 @@ def test_registry_has_builtin_strategies():
     assert "rsi_reversal" in names
     assert "kdj_cross" in names
     assert "fsl" in names
+    assert "atr_trend_risk" in names
     assert len(names) >= 19
 
 
@@ -93,6 +94,22 @@ def test_strategy_build_with_custom_params():
     inst = get_registry().get("ma_cross").build({"fast": 10, "slow": 30})
     assert inst.p["fast"] == 10
     assert inst.p["slow"] == 30
+
+
+def test_atr_trend_risk_schema_exposes_operation_parameters():
+    """ATR 趋势风控应暴露趋势、止损、移动止损和可选止盈参数。"""
+    from easy_tdx.backtest.strategies import get_registry
+
+    schema = get_registry().get("atr_trend_risk").to_schema()
+    names = [p["name"] for p in schema["params"]]
+    assert names == [
+        "trend_period",
+        "atr_period",
+        "entry_atr",
+        "stop_atr",
+        "trailing_atr",
+        "take_profit_atr",
+    ]
 
 
 def test_strategy_rejects_unknown_param():

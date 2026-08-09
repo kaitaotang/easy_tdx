@@ -230,7 +230,11 @@ async function submitSaveCombo() {
 // ── 载入组合（kind: 'multi'）→ 自动重跑到今天 ────────────────────────────────
 
 function isoToday(): string {
-  return new Date().toISOString().slice(0, 10)
+  const d = new Date()
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 /** 载入组合：把保存的 items 的 end_date 全部覆盖为今天，自动触发组合回测。
@@ -316,8 +320,12 @@ function onLoad(s: SavedStrategy) {
         params,
         symbol: codeOnly || undefined,
         startDate: (ctx.start_date as string) || undefined,
-        endDate: (ctx.end_date as string) || undefined,
+        // 载入单标策略时始终重跑到今天，避免把旧快照日期带入回测。
+        endDate: isoToday(),
         category: (ctx.category as string) || undefined,
+        savedId: s.id,
+        savedName: s.name,
+        autoRun: '1',
       },
     })
   }
@@ -531,6 +539,14 @@ function tradeDirectionLabel(direction: Trade['direction']): string {
   return direction === 'BUY' ? '买入' : '卖出'
 }
 
+function tradeSourceLabel(trade: Trade): string {
+  if (trade.source === 'stop') return '风控触发'
+  if (trade.stop_loss != null || trade.take_profit != null) {
+    return trade.direction === 'BUY' ? '建仓+风控' : '移动止损'
+  }
+  return '策略信号'
+}
+
 function tradeDate(datetime: string): string {
   return datetime.slice(0, 10)
 }
@@ -603,6 +619,34 @@ const comboPerf = computed<Performance | null>(() => {
     volatility: get('volatility'),
   }
 })
+
+const volatilityProfiles = computed(() =>
+  Object.entries(store.multiStrategyResult?.volatility_profiles || {}).map(([key, profile]) => ({
+    key,
+    ...profile,
+  })),
+)
+
+const adaptiveComparison = computed(() => store.multiStrategyResult?.adaptive_comparison || null)
+
+const adaptiveVerdict = computed(() => {
+  const comparison = adaptiveComparison.value
+  if (!comparison) return { tone: 'neutral', title: '暂无对照数据' }
+  const delta = comparison.delta
+  if (delta.sharpe > 0.1 && delta.max_drawdown <= 0 && delta.total_return >= 0) {
+    return { tone: 'good', title: '风险收益表现改善' }
+  }
+  if (delta.sharpe < -0.1 && delta.total_return < 0) {
+    return { tone: 'bad', title: '本次实验暂未改善' }
+  }
+  return { tone: 'mixed', title: '收益与风险存在取舍' }
+})
+
+function volatilityRegimeLabel(regime: string): string {
+  if (regime === 'low') return '低波动'
+  if (regime === 'high') return '高波动'
+  return '正常波动'
+}
 
 // 组合评级：从 combined_equity 重算夏普/卡玛/回撤/波动率等 5 维度评分，
 // 与 /portfolio 页和单标的回测页同口径（复用 gradePortfolio）。
@@ -1031,6 +1075,131 @@ const comboGrade = computed(() =>
           </div>
         </section>
 
+        <section v-if="adaptiveComparison" class="report-card experiment-card">
+          <div class="report-section-head">
+            <div>
+              <span class="section-kicker">CONTROLLED EXPERIMENT</span>
+              <h4>ATR 波动适配：使用前后对照</h4>
+              <p>原始等权组合保持不变；实验组只使用当时已经发生的历史数据分配风险预算</p>
+            </div>
+            <span class="experiment-verdict" :class="`tone-${adaptiveVerdict.tone}`">
+              {{ adaptiveVerdict.title }}
+            </span>
+          </div>
+
+          <div class="comparison-table-wrap">
+            <table class="comparison-table">
+              <thead>
+                <tr>
+                  <th>指标</th>
+                  <th class="num">原始等权</th>
+                  <th class="num">波动适配实验</th>
+                  <th class="num">变化</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>总收益</td>
+                  <td class="num">{{ pct(adaptiveComparison.baseline.total_return) }}</td>
+                  <td class="num">{{ pct(adaptiveComparison.adaptive.total_return) }}</td>
+                  <td class="num" :class="adaptiveComparison.delta.total_return >= 0 ? 'pos' : 'neg'">
+                    {{ adaptiveComparison.delta.total_return > 0 ? '+' : '' }}{{ pct(adaptiveComparison.delta.total_return) }}
+                  </td>
+                </tr>
+                <tr>
+                  <td>年化收益</td>
+                  <td class="num">{{ pct(adaptiveComparison.baseline.annual_return) }}</td>
+                  <td class="num">{{ pct(adaptiveComparison.adaptive.annual_return) }}</td>
+                  <td class="num" :class="adaptiveComparison.delta.annual_return >= 0 ? 'pos' : 'neg'">
+                    {{ adaptiveComparison.delta.annual_return > 0 ? '+' : '' }}{{ pct(adaptiveComparison.delta.annual_return) }}
+                  </td>
+                </tr>
+                <tr>
+                  <td>最大回撤</td>
+                  <td class="num">{{ pct(adaptiveComparison.baseline.max_drawdown) }}</td>
+                  <td class="num">{{ pct(adaptiveComparison.adaptive.max_drawdown) }}</td>
+                  <td class="num" :class="adaptiveComparison.delta.max_drawdown <= 0 ? 'pos' : 'neg'">
+                    {{ adaptiveComparison.delta.max_drawdown > 0 ? '+' : '' }}{{ pct(adaptiveComparison.delta.max_drawdown) }}
+                  </td>
+                </tr>
+                <tr>
+                  <td>夏普比率</td>
+                  <td class="num">{{ num(adaptiveComparison.baseline.sharpe) }}</td>
+                  <td class="num">{{ num(adaptiveComparison.adaptive.sharpe) }}</td>
+                  <td class="num" :class="adaptiveComparison.delta.sharpe >= 0 ? 'pos' : 'neg'">
+                    {{ adaptiveComparison.delta.sharpe > 0 ? '+' : '' }}{{ num(adaptiveComparison.delta.sharpe) }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="experiment-rule">
+            实验规则：观察最近 {{ adaptiveComparison.lookback }} 根 K 线；单策略最高
+            {{ pct(adaptiveComparison.max_strategy_weight) }}，组合最高
+            {{ pct(adaptiveComparison.max_total_exposure) }}。低波动不自动加仓，而是先检查该策略历史上
+            “低 ATR”与“高 ATR”阶段的收益关系。
+          </div>
+
+          <div v-if="volatilityProfiles.length" class="table-scroll volatility-table-wrap">
+            <table class="holdings-table volatility-table">
+              <thead>
+                <tr>
+                  <th>策略</th>
+                  <th>当前波动</th>
+                  <th class="num">ATR%</th>
+                  <th class="num">ATR 历史分位</th>
+                  <th class="num">20日波动率</th>
+                  <th>历史相关性</th>
+                  <th class="num">低波动年化</th>
+                  <th class="num">高波动年化</th>
+                  <th class="num">样本数</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="profile in volatilityProfiles" :key="profile.key">
+                  <td>
+                    <span class="strategy-name">{{ profile.strategy_label }}</span>
+                    <small class="profile-symbol">{{ profile.symbol }}</small>
+                  </td>
+                  <td>
+                    <span class="volatility-regime" :class="`regime-${profile.current_regime}`">
+                      {{ volatilityRegimeLabel(profile.current_regime) }}
+                    </span>
+                  </td>
+                  <td class="num">{{ pct(profile.current_atr_pct) }}</td>
+                  <td class="num">P{{ (profile.atr_percentile * 100).toFixed(0) }}</td>
+                  <td class="num">{{ pct(profile.current_realized_vol) }}</td>
+                  <td>
+                    <span
+                      class="relationship-tag"
+                      :class="{
+                        low: profile.relationship === '低波动更有利',
+                        high: profile.relationship === '高波动更有利',
+                      }"
+                    >
+                      {{ profile.relationship }}
+                    </span>
+                  </td>
+                  <td class="num" :class="profile.low_vol_annual_return >= 0 ? 'pos' : 'neg'">
+                    {{ pct(profile.low_vol_annual_return) }}
+                  </td>
+                  <td class="num" :class="profile.high_vol_annual_return >= 0 ? 'pos' : 'neg'">
+                    {{ pct(profile.high_vol_annual_return) }}
+                  </td>
+                  <td class="num muted-text">
+                    {{ profile.low_regime_observations }}/{{ profile.high_regime_observations }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="model-note experiment-note">
+            {{ adaptiveComparison.note }} 只有当实验组在样本外仍能提高夏普或降低回撤时，才值得接入真实资金调度和分批成交。
+          </div>
+        </section>
+
         <details v-if="comboPerf" class="report-card report-disclosure">
           <summary>
             <span>
@@ -1076,8 +1245,14 @@ const comboGrade = computed(() =>
                   <th>策略</th>
                   <th>标的</th>
                   <th>动作</th>
+                  <th>信号</th>
+                  <th>买点波动</th>
+                  <th class="num">ATR%</th>
+                  <th class="num">20日波动率</th>
                   <th class="num">数量</th>
                   <th class="num">成交价</th>
+                  <th class="num">止损参考</th>
+                  <th class="num">止盈参考</th>
                   <th class="num">成交金额</th>
                   <th class="num">平仓盈亏</th>
                 </tr>
@@ -1090,8 +1265,38 @@ const comboGrade = computed(() =>
                   <td :class="row.direction === 'BUY' ? 'pos' : 'neg'">
                     {{ tradeDirectionLabel(row.direction) }}
                   </td>
+                  <td>
+                    <span
+                      class="trade-source"
+                      :class="{ risk: row.source === 'stop' || row.stop_loss != null }"
+                    >
+                      {{ tradeSourceLabel(row) }}
+                    </span>
+                  </td>
+                  <td>
+                    <span
+                      v-if="row.direction === 'BUY' && row.volatility_regime"
+                      class="volatility-regime"
+                      :class="`regime-${row.volatility_regime}`"
+                    >
+                      {{ volatilityRegimeLabel(row.volatility_regime) }}
+                    </span>
+                    <span v-else>-</span>
+                  </td>
+                  <td class="num">
+                    {{ row.direction === 'BUY' && row.atr_pct != null ? pct(row.atr_pct) : '-' }}
+                  </td>
+                  <td class="num">
+                    {{ row.direction === 'BUY' && row.realized_vol != null ? pct(row.realized_vol) : '-' }}
+                  </td>
                   <td class="num">{{ row.size.toFixed(0) }}</td>
                   <td class="num">{{ row.price.toFixed(3) }}</td>
+                  <td class="num risk-price">
+                    {{ row.stop_loss == null ? '-' : row.stop_loss.toFixed(3) }}
+                  </td>
+                  <td class="num take-profit-price">
+                    {{ row.take_profit == null ? '-' : row.take_profit.toFixed(3) }}
+                  </td>
                   <td class="num">{{ row.amount.toFixed(2) }}</td>
                   <td class="num" :class="{ pos: row.pnl > 0, neg: row.pnl < 0 }">
                     {{ row.pnl === 0 ? '-' : row.pnl.toFixed(2) }}
@@ -1706,6 +1911,100 @@ const comboGrade = computed(() =>
   line-height: 1.55;
 }
 .table-scroll { overflow-x: auto; }
+.experiment-card {
+  border-color: rgba(150, 118, 255, 0.3);
+  background:
+    linear-gradient(135deg, rgba(150, 118, 255, 0.055), transparent 42%),
+    rgba(23, 28, 39, 0.86);
+}
+.experiment-verdict {
+  flex-shrink: 0;
+  padding: 5px 11px;
+  border: 1px solid rgba(139, 145, 158, 0.26);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: rgba(139, 145, 158, 0.07);
+  font-size: 11px;
+  font-weight: 700;
+}
+.experiment-verdict.tone-good {
+  color: #ff7b7f;
+  border-color: rgba(239, 65, 70, 0.3);
+  background: rgba(239, 65, 70, 0.09);
+}
+.experiment-verdict.tone-bad {
+  color: #58c58a;
+  border-color: rgba(24, 160, 88, 0.32);
+  background: rgba(24, 160, 88, 0.09);
+}
+.experiment-verdict.tone-mixed {
+  color: #f1b55b;
+  border-color: rgba(240, 160, 32, 0.3);
+  background: rgba(240, 160, 32, 0.08);
+}
+.comparison-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #303746;
+  border-radius: 9px;
+}
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.comparison-table th,
+.comparison-table td {
+  padding: 10px 13px;
+  border-bottom: 1px solid rgba(42, 46, 58, 0.78);
+  text-align: left;
+}
+.comparison-table tr:last-child td { border-bottom: 0; }
+.comparison-table th {
+  color: var(--text-dim);
+  background: rgba(8, 11, 17, 0.26);
+  font-size: 10px;
+  letter-spacing: 0.3px;
+}
+.comparison-table .num { text-align: right; font-family: var(--font-mono); }
+.experiment-rule {
+  margin-top: 11px;
+  padding: 9px 11px;
+  border-left: 2px solid #9676ff;
+  color: #99a2b0;
+  background: rgba(150, 118, 255, 0.055);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.volatility-table-wrap { margin-top: 13px; }
+.profile-symbol {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+.volatility-regime,
+.relationship-tag {
+  display: inline-flex;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: rgba(139, 145, 158, 0.09);
+  font-size: 10px;
+  font-weight: 650;
+}
+.volatility-regime.regime-low,
+.relationship-tag.low {
+  color: #75baff;
+  background: rgba(74, 158, 255, 0.11);
+}
+.volatility-regime.regime-high,
+.relationship-tag.high {
+  color: #f1b55b;
+  background: rgba(240, 160, 32, 0.11);
+}
+.muted-text { color: var(--text-dim); }
+.experiment-note { margin-bottom: 0; }
 .insight-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(300px, 0.85fr);
@@ -1784,6 +2083,20 @@ const comboGrade = computed(() =>
 .combined-trades-table tr.rejected td {
   opacity: 0.45;
   text-decoration: line-through;
+}
+.trade-source {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.trade-source.risk {
+  color: #f0b35a;
+  font-weight: 600;
+}
+.combined-trades-table .risk-price {
+  color: #f0b35a;
+}
+.combined-trades-table .take-profit-price {
+  color: var(--up);
 }
 .strategy-chart-title {
   margin: 20px 0 10px;

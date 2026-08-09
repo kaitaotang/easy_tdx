@@ -56,6 +56,9 @@ class Trade:
         pnl: 已实现盈亏（仅平仓时计算，绝对金额单位：元）
         cost_basis: SELL 对应的持仓成本基数（元），用于派生单笔收益率 pnl/cost_basis
         rejected: 是否被拒绝（资金不足/不允许做空等）
+        source: 成交来源。strategy=策略信号，stop=止损/止盈触发。
+        stop_loss: 该信号携带的止损参考价（None = 未设置）
+        take_profit: 该信号携带的止盈参考价（None = 未设置）
     """
 
     datetime: int
@@ -69,6 +72,10 @@ class Trade:
     # BUY 行恒为 0.0。仅 _compute_pnls 平仓时填入。
     cost_basis: float = 0.0
     rejected: bool = False
+    # 复制自生成该成交的 Signal，方便回测后人工复核 ATR 风控价。
+    source: str = "strategy"
+    stop_loss: float | None = None
+    take_profit: float | None = None
 
 
 # ── 持仓快照 ────────────────────────────────────────────────────────────────

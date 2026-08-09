@@ -54,6 +54,12 @@ STRATEGY_PRESETS: dict[str, dict[str, list[Any]]] = {
         "n_ma": [10, 20],
         "k": [1.5, 2.0, 2.5, 3.0],
     },  # 8
+    "atr_trend_risk": {
+        "trend_period": [30, 50, 80],
+        "atr_period": [14, 20],
+        "entry_atr": [0.0, 0.5, 1.0],
+        "trailing_atr": [2.0, 2.5, 3.0],
+    },  # 54
     # ── 振荡/反转类 ─────────────────────────────────────────────────────────
     "macd": {
         "short": [8, 10, 12, 15],

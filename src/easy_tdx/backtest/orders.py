@@ -134,6 +134,7 @@ class OrderSimulator:
                     position_mode=position_mode,
                 )
                 if trade is not None:
+                    self._attach_signal_metadata(trade, signal)
                     trades.append(trade)
                     if not trade.rejected:
                         current_cash -= trade.size * trade.price + trade.commission + trade.slippage
@@ -150,12 +151,24 @@ class OrderSimulator:
                     position_mode=position_mode,
                 )
                 if trade is not None:
+                    self._attach_signal_metadata(trade, signal)
                     trades.append(trade)
                     if not trade.rejected:
                         current_cash += trade.size * trade.price - trade.commission - trade.slippage
                         current_position -= trade.size
 
         return trades
+
+    @staticmethod
+    def _attach_signal_metadata(trade: Trade, signal: Signal) -> None:
+        """把信号来源和 ATR 风控参考价带到成交记录。
+
+        撮合器的多个拒单/减仓分支都统一经过这里，避免某个分支遗漏
+        ``stop_loss`` / ``take_profit``，也兼容旧策略（默认值保持不变）。
+        """
+        trade.source = signal.source
+        trade.stop_loss = signal.stop_loss
+        trade.take_profit = signal.take_profit
 
     def _find_bar_index(self, datetime_val: int) -> int | None:
         """查找 datetime 对应的 K 线索引。

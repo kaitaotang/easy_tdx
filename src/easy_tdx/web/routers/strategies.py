@@ -1,4 +1,4 @@
-"""策略库路由：列出 / 查看 / 保存 / 改名 / 删除用户收藏的策略。
+"""策略库路由：列出 / 查看 / 保存 / 更新 / 改名 / 删除用户收藏的策略。
 
 设计要点：
 - 持久化走 :class:`~easy_tdx.web.strategy_store.StrategyStore`（SQLite 单文件），
@@ -15,7 +15,7 @@ from easy_tdx.web.backtest_schemas import (
     SavedStrategy,
     SavedStrategyCreate,
     SavedStrategyListResponse,
-    SavedStrategyRename,
+    SavedStrategyUpdate,
 )
 from easy_tdx.web.strategy_store import (
     SavedStrategy as SavedStrategyRecord,
@@ -82,10 +82,13 @@ async def create_saved_strategy(req: SavedStrategyCreate) -> SavedStrategy:
 
 
 @router.patch("/strategies/{strategy_id}", response_model=SavedStrategy)
-async def rename_saved_strategy(strategy_id: str, req: SavedStrategyRename) -> SavedStrategy:
-    """修改一条已保存策略的名称，不改变其策略配置与回测快照。"""
+async def update_saved_strategy(strategy_id: str, req: SavedStrategyUpdate) -> SavedStrategy:
+    """更新已保存策略内容；只传 name 时兼容原有改名功能。"""
     store = get_store()
-    saved = store.rename(strategy_id, req.name)
+    fields = req.model_dump(exclude_unset=True)
+    if not fields:
+        raise ValueError("至少提供一个需要更新的字段")
+    saved = store.update(strategy_id, **fields)
     if saved is None:
         raise ValueError(f"策略 '{strategy_id}' 不存在")
     return _to_response(saved)

@@ -127,6 +127,28 @@ def test_rename_rejects_blank_name(store: StrategyStore):
         store.rename(rec.id, "   ")
 
 
+def test_update_preserves_id_and_created_at(store: StrategyStore):
+    rec = store.add(_sample_single())
+    updated = store.update(
+        rec.id,
+        name="更新后的策略",
+        context={"symbol": "SZ:000001", "end_date": "2026-08-09"},
+        snapshot={"total_return": 0.8},
+        params={"fast": 10, "slow": 30},
+    )
+    assert updated is not None
+    assert updated.id == rec.id
+    assert updated.created_at == rec.created_at
+    assert updated.name == "更新后的策略"
+    assert updated.context["end_date"] == "2026-08-09"
+    assert updated.snapshot["total_return"] == pytest.approx(0.8)
+    assert updated.params == {"fast": 10, "slow": 30}
+
+
+def test_update_missing_returns_none(store: StrategyStore):
+    assert store.update("nonexistent", name="不存在") is None
+
+
 def test_delete_removes_record(store: StrategyStore):
     rec = store.add(_sample_single())
     assert store.delete(rec.id) is True
@@ -243,12 +265,30 @@ def test_router_create_then_list_get_rename_delete(client: TestClient):
     assert renamed["name"] == "新组合名称"
     assert renamed["params"] == {"fast": 5, "slow": 20}
 
-    # 5. 删除（返回 200 + 确认体，非 204，见路由注释）
+    # 5. 完整更新（仍保留原 id/创建时间），模拟单标回测重跑后覆盖旧记录
+    created_at = renamed["created_at"]
+    resp = client.patch(
+        f"/api/v1/strategies/{sid}",
+        json={
+            "name": "重跑后的策略",
+            "context": {"symbol": "SZ:000001", "start_date": "2023-01-01", "end_date": "2026-08-09"},
+            "snapshot": {"total_return": 0.72, "sharpe": 1.8},
+        },
+    )
+    assert resp.status_code == 200
+    updated = resp.json()
+    assert updated["id"] == sid
+    assert updated["created_at"] == created_at
+    assert updated["name"] == "重跑后的策略"
+    assert updated["context"]["end_date"] == "2026-08-09"
+    assert updated["snapshot"]["total_return"] == pytest.approx(0.72)
+
+    # 6. 删除（返回 200 + 确认体，非 204，见路由注释）
     resp = client.delete(f"/api/v1/strategies/{sid}")
     assert resp.status_code == 200
     assert resp.json()["deleted"] == sid
 
-    # 6. 列表为空
+    # 7. 列表为空
     assert client.get("/api/v1/strategies").json()["count"] == 0
 
 
