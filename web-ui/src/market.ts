@@ -22,6 +22,16 @@ export function isExMarketCode(code: string): boolean {
   return false
 }
 
+/** 判断通达信指数代码（如中证指数 H30269）。 */
+export function isIndexCode(code: string): boolean {
+  return /^H\d{5}$/i.test(code.trim())
+}
+
+/** H 开头的指数在通达信指数行情接口中按沪市市场号请求。 */
+export function detectIndexMarket(_code: string): Market {
+  return 'SH'
+}
+
 /**
  * 检测扩展市场类型（仅当 isExMarketCode 返回 true 时调用）。
  */
@@ -70,6 +80,7 @@ export function toSymbol(code: string): string {
  */
 export function toFullSymbol(code: string): string {
   const c = code.trim()
+  if (isIndexCode(c)) return `SH:${c.toUpperCase()}`
   if (isExMarketCode(c)) {
     const normalized = /^[A-Za-z]+$/.test(c) ? c.toUpperCase() : c
     return `${detectExMarket(c)}:${normalized}`

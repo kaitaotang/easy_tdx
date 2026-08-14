@@ -105,13 +105,26 @@ class BacktestEngine:
         self._execution_model = execution_model
         self._warmup_bars = max(int(warmup_bars), 0)
 
-    def run(self, df: pd.DataFrame, chanlun_result: Any | None = None) -> BacktestResult:
+    def run(
+        self,
+        df: pd.DataFrame,
+        chanlun_result: Any | None = None,
+        dividends: pd.DataFrame | list[dict[str, Any]] | None = None,
+        dividend_bars: pd.DataFrame | None = None,
+        dividend_source: str | None = None,
+        dividend_yield_pct: float | None = None,
+    ) -> BacktestResult:
         """Run backtest.
 
         Args:
             df: Price data with OHLCV columns
             chanlun_result: Optional chanlun analysis result for strategy.
                 When provided, takes priority over auto-computed result.
+            dividends: 可选的除权除息历史，用于生成股息率指标；
+                不参与交易。
+            dividend_bars: 可选的参考标的 K 线（例如 ETF 跟踪指数）。
+            dividend_source: 参考股息来源说明，原样写入指标备注。
+            dividend_yield_pct: 无历史分红时使用的当前参考股息率（百分比）。
 
         Returns:
             BacktestResult with performance, equity_curve, trades, positions, config
@@ -182,6 +195,29 @@ class BacktestEngine:
             "reject_policy": self._reject_policy,
         }
 
+        from easy_tdx.backtest.dividends import build_dividend_profile
+
+        # ETF 等标的可能没有自己的现金分红记录。此时允许调用方传入跟踪
+        # 指数的 K 线，使用指数收盘价计算同一组分红产生的参考股息率。
+        profile_bars = dividend_bars if dividend_bars is not None else df
+        dividend_profile = (
+            build_dividend_profile(
+                profile_bars,
+                dividends,
+                fallback_yield_pct=dividend_yield_pct,
+                fallback_source=dividend_source,
+            )
+            if dividends is not None or dividend_yield_pct is not None
+            else None
+        )
+        if (
+            dividend_profile is not None
+            and dividend_source
+            and not dividend_profile.get("source")
+        ):
+            note = str(dividend_profile.get("note") or "")
+            dividend_profile["note"] = f"{note}（参考来源：{dividend_source}）"
+            dividend_profile["source"] = dividend_source
         return BacktestResult(
             performance=performance,
             equity_curve=tracker.equity_curve,
@@ -189,6 +225,7 @@ class BacktestEngine:
             positions=tracker.positions,
             config=config,
             diagnostic=analyzer.diagnostic,
+            dividend_profile=dividend_profile,
         )
 
     def _execute_with_model(self, signals: list[Signal], df: pd.DataFrame) -> list[Trade]:

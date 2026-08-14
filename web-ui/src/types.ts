@@ -65,6 +65,44 @@ export interface BacktestRequest {
   symbol?: string
   category?: Category
   count?: number
+  /** A 股除权除息历史；用于展示股息率，不参与策略交易。 */
+  dividends?: DividendEvent[]
+  /** 可选的跟踪指数 K 线，用于 ETF 无自身分红记录时的参考股息率。 */
+  dividend_bars?: Bar[]
+  dividend_source?: string
+  dividend_yield_pct?: number
+}
+
+export interface DividendEvent {
+  date?: string
+  datetime?: string
+  category?: number
+  fenhong?: number | null
+  songzhuangu?: number | null
+  peigu?: number | null
+}
+
+export interface DividendHistoryPoint {
+  datetime: string
+  dividend_per_share: number
+  close: number
+  yield_pct: number
+}
+
+export interface DividendProfile {
+  available: boolean
+  current_yield_pct: number | null
+  historical_percentile: number | null
+  current_dividend_per_share: number | null
+  as_of: string | null
+  trailing_days: number
+  event_count: number
+  history: DividendHistoryPoint[]
+  note: string
+  /** 仅有当前参考值，没有历史现金分红序列。 */
+  reference_only?: boolean
+  /** 股息率来源；ETF 兜底时为跟踪指数或行情源。 */
+  source?: string
 }
 
 // ── 回测结果 ──────────────────────────────────────────────────────────────────
@@ -130,6 +168,8 @@ export interface BacktestResult {
   config: Record<string, unknown>
   /** 多策略组合接口附带的原始 K 线，用于恢复历史买卖点图。 */
   bars?: Bar[]
+  /** 单标回测的股息率历史辅助指标。 */
+  dividend_profile?: DividendProfile | null
 }
 
 // ── 后台任务（POST /api/v1/backtest/run/async + GET /tasks/{id}） ─────────────

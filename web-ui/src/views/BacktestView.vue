@@ -7,14 +7,23 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import EquityChart from '../components/EquityChart.vue'
+import DividendProfile from '../components/DividendProfile.vue'
 import GradeDetails from '../components/GradeDetails.vue'
 import KlineChart from '../components/KlineChart.vue'
 import MetricTable from '../components/MetricTable.vue'
 import StrategyPicker from '../components/StrategyPicker.vue'
 import SymbolPicker from '../components/SymbolPicker.vue'
 import TradeTable from '../components/TradeTable.vue'
-import { fetchSavedStrategy, formatError, saveStrategy, updateSavedStrategy } from '../api'
-import { toFullSymbol } from '../market'
+import {
+  fetchDividendEvents,
+  fetchCurrentDividendYield,
+  fetchIndexBars,
+  fetchSavedStrategy,
+  formatError,
+  saveStrategy,
+  updateSavedStrategy,
+} from '../api'
+import { detectIndexMarket, detectMarket, isExMarketCode, isIndexCode, toFullSymbol } from '../market'
 import { gradePerformance } from '../grading'
 import type { Category, ExecutionMode, SavedStrategyCreate } from '../types'
 import { useBacktestStore } from '../stores/backtest'
@@ -47,6 +56,7 @@ const cash = ref(1000000)
 const commission = ref(0.0003)
 const slippage = ref(0)
 const execution = ref<ExecutionMode>('next_open')
+const dividendUnavailableReason = ref('')
 // 从策略库载入时保存原记录 id；后续保存将 PATCH 覆盖这条记录。
 const loadedStrategyId = ref<string | null>(null)
 const loadedStrategyName = ref('')
@@ -140,9 +150,84 @@ onMounted(async () => {
 async function onRun(): Promise<boolean> {
   // 先清掉旧结果，避免取行情失败时误把上一次结果写回策略库。
   store.clearResult()
+  dividendUnavailableReason.value = ''
   // 1. 先取行情（SymbolPicker.loadBars 会校验并填充 store.ohlcv）
   const ok = await symbolPicker.value?.loadBars()
   if (!ok) return false // 校验/取数失败，错误已在 store.error
+  // A 股有 TDX 除权除息历史；扩展市场暂无同口径历史数据，清空避免串标的。
+  let dividends = undefined
+  let dividendBars = undefined
+  let dividendSource = undefined
+  let dividendYieldPct = undefined
+  if ((!isExMarketCode(code.value) || isIndexCode(code.value)) && category.value === 'DAY') {
+    const baseCode = code.value.trim()
+    const baseMarket = isIndexCode(baseCode) ? detectIndexMarket(baseCode) : detectMarket(baseCode)
+    try {
+      dividends = await fetchDividendEvents(baseMarket, baseCode)
+    } catch (e) {
+      dividends = undefined
+      dividendUnavailableReason.value = `股息数据读取失败：${formatError(e)}`
+    }
+    const hasCash = (dividends || []).some(
+      (event) => Number(event.fenhong) > 0 && (event.category == null || event.category === 1),
+    )
+    // 512890 等 ETF 的自身 XDXR 可能为空，回退到其跟踪的中证指数 H30269。
+    if (!hasCash && baseCode === '512890') {
+      const indexCode = 'H30269'
+      const indexMarket = detectIndexMarket(indexCode)
+      try {
+        const [indexBars, indexDividends] = await Promise.all([
+          fetchIndexBars(indexMarket, indexCode, category.value, startDate.value, endDate.value),
+          fetchDividendEvents(indexMarket, indexCode),
+        ])
+        const indexHasCash = indexDividends.some(
+          (event) => Number(event.fenhong) > 0 && (event.category == null || event.category === 1),
+        )
+        if (indexBars.length >= 2 && indexHasCash) {
+          dividendBars = indexBars
+          dividends = indexDividends
+          dividendSource = `${indexMarket}:${indexCode}（512890跟踪指数，参考股息）`
+        }
+      } catch {
+        // 指数分红接口不可用时继续尝试当前行情源股息率。
+      }
+      if (!dividendSource) {
+        try {
+          const currentYield = await fetchCurrentDividendYield('CSI_INDEX', indexCode)
+          if (currentYield != null) {
+            dividendYieldPct = currentYield
+            dividendSource = `CSI_INDEX:${indexCode}（512890跟踪指数，行情源当前参考股息）`
+          } else {
+            dividendUnavailableReason.value = `${indexCode} 的行情源股息率字段不可用（返回0或缺失），不能据此认定股息率为0%。`
+          }
+        } catch (e) {
+          // MAC 行情源不可用时保持无股息率展示，不影响回测。
+          dividendUnavailableReason.value = `${indexCode} 的参考股息率读取失败：${formatError(e)}`
+        }
+      }
+    }
+    if (isIndexCode(baseCode) && hasCash) {
+      dividendSource = `${baseMarket}:${baseCode}（指数自身股息）`
+    }
+    if (isIndexCode(baseCode) && !hasCash) {
+      try {
+        const currentYield = await fetchCurrentDividendYield('CSI_INDEX', baseCode)
+        if (currentYield != null) {
+          dividendYieldPct = currentYield
+          dividendSource = `CSI_INDEX:${baseCode}（行情源当前参考股息）`
+        } else {
+          dividendUnavailableReason.value = `${baseCode} 的行情源股息率字段不可用（返回0或缺失），不能据此认定股息率为0%。`
+        }
+      } catch (e) {
+        // 当前股息率是辅助指标，失败不阻断回测。
+        dividendUnavailableReason.value = `${baseCode} 的参考股息率读取失败：${formatError(e)}`
+      }
+    }
+  } else if (category.value !== 'DAY') {
+    dividendUnavailableReason.value = '历史股息率目前按日线收盘价计算，请把周期切换为 DAY。'
+  } else {
+    dividendUnavailableReason.value = '当前数据源暂未提供美股或港股的历史现金分红。'
+  }
   // 2. 再回测
   await store.run({
     strategy: strategy.value,
@@ -151,6 +236,10 @@ async function onRun(): Promise<boolean> {
     commission: commission.value,
     slippage: slippage.value,
     execution: execution.value,
+    dividends,
+    dividend_bars: dividendBars,
+    dividend_source: dividendSource,
+    dividend_yield_pct: dividendYieldPct,
   })
   return store.result !== null
 }
@@ -356,6 +445,14 @@ async function onSave() {
         <section class="report-section">
           <h3>净值曲线与回撤</h3>
           <EquityChart :equity="store.result.equity_curve" />
+        </section>
+
+        <section class="report-section">
+          <h3>股息率</h3>
+          <DividendProfile
+            :profile="store.result.dividend_profile"
+            :unavailable-reason="dividendUnavailableReason"
+          />
         </section>
 
         <section v-if="grade" class="report-section">

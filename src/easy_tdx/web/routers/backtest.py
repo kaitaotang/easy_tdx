@@ -77,6 +77,7 @@ async def run_backtest(req: BacktestRequest) -> BacktestResultResponse:
 async def run_backtest_async(
     req: BacktestRequest,
     client: Any = Depends(get_client),
+    ex_client: Any | None = Depends(get_optional_ex_client),
 ) -> TaskSubmitResponse:
     """提交后台回测任务，立即返回 task_id。
 
@@ -88,7 +89,7 @@ async def run_backtest_async(
         df = _ohlcv_to_df(req.ohlcv)
         bars_desc = f"{len(df)} 根"
     elif req.symbol is not None:
-        df = await _fetch_bars(client, req.symbol, req.category, req.count)
+        df = await _fetch_bars(client, req.symbol, req.category, req.count, ex_client=ex_client)
         bars_desc = f"{req.symbol} {req.category}×{req.count}"
     else:
         # BacktestRequest 校验器已保证二者至少其一，此处不可达
@@ -322,7 +323,15 @@ def _run_backtest(df: pd.DataFrame, req: BacktestRequest) -> dict[str, Any]:
         slippage=req.slippage,
         execution=req.execution,
     )
-    result = engine.run(df)
+    # 股息率只依赖 K 线和已发生的现金分红，不影响成交信号或收益曲线。
+    dividend_bars = _ohlcv_to_df(req.dividend_bars) if req.dividend_bars else None
+    result = engine.run(
+        df,
+        dividends=req.dividends,
+        dividend_bars=dividend_bars,
+        dividend_source=req.dividend_source,
+        dividend_yield_pct=req.dividend_yield_pct,
+    )
     return serialize_result(result)
 
 
@@ -345,18 +354,51 @@ def _ohlcv_to_df(records: list[dict[str, Any]]) -> pd.DataFrame:
     return df
 
 
-async def _fetch_bars(client: Any, symbol: str, category: str, count: int) -> pd.DataFrame:
+async def _fetch_bars(
+    client: Any,
+    symbol: str,
+    category: str,
+    count: int,
+    *,
+    ex_client: Any | None = None,
+) -> pd.DataFrame:
     """按标的取 K 线（async，必须在 event loop 内调用）。"""
     from easy_tdx.web.convert import category_from_str, market_from_str
 
     market_str, code = symbol.split(":", 1)
-    df = await client.get_security_bars(
-        market_from_str(market_str),
-        code,
-        category_from_str(category),
-        0,
-        count,
-    )
+    category_value = category_from_str(category)
+    if code.upper().startswith("H") and len(code) == 6:
+        # 通达信指数（如 H30269）必须走指数报文；股票报文会返回空数据或错位。
+        try:
+            df = await client.get_index_bars(
+                market_from_str(market_str), code.upper(), category_value, 0, count
+            )
+        except Exception:
+            df = pd.DataFrame()
+        if len(df) == 0 and ex_client is not None:
+            from easy_tdx.mac.enums import Period
+            from easy_tdx.web.convert import ex_market_from_str
+
+            period_map = {
+                "DAY": Period.DAILY,
+                "WEEK": Period.WEEKLY,
+                "MONTH": Period.MONTHLY,
+                "MIN_5": Period.MIN_5,
+                "MIN_15": Period.MIN_15,
+                "MIN_30": Period.MIN_30,
+                "MIN_60": Period.MIN_60,
+            }
+            df = await ex_client.goods_kline(
+                ex_market_from_str("CSI_INDEX"),
+                code.upper(),
+                period_map[category.upper()],
+                0,
+                count,
+            )
+    else:
+        df = await client.get_security_bars(
+            market_from_str(market_str), code, category_value, 0, count
+        )
     if len(df) == 0:
         raise ValueError(f"标的 {symbol} 未取到任何 K 线数据")
     return df
@@ -485,6 +527,7 @@ async def _fetch_multi_strategy_bars(
         # 2. 逐页取行情（覆盖 start_date，最多 10 页）
         market_str, code = item.symbol.split(":", 1)
         is_ex_market = market_str in {"US_STOCK", "HK_MAIN_BOARD"}
+        is_index = code.upper().startswith("H") and len(code) == 6
         page_size = 700 if is_ex_market else 800
         frames: list[pd.DataFrame] = []
         for page in range(10):
@@ -512,6 +555,37 @@ async def _fetch_multi_strategy_bars(
                         start=page * page_size,
                         count=page_size,
                     )
+                elif is_index:
+                    try:
+                        page_df = await client.get_index_bars(
+                            market_from_str(market_str),
+                            code.upper(),
+                            category_from_str(item.category),
+                            page * page_size,
+                            page_size,
+                        )
+                    except Exception:
+                        page_df = pd.DataFrame()
+                    if (page_df is None or len(page_df) == 0) and ex_client is not None:
+                        from easy_tdx.mac.enums import Period
+                        from easy_tdx.web.convert import ex_market_from_str
+
+                        period_map = {
+                            "DAY": Period.DAILY,
+                            "WEEK": Period.WEEKLY,
+                            "MONTH": Period.MONTHLY,
+                            "MIN_5": Period.MIN_5,
+                            "MIN_15": Period.MIN_15,
+                            "MIN_30": Period.MIN_30,
+                            "MIN_60": Period.MIN_60,
+                        }
+                        page_df = await ex_client.goods_kline(
+                            ex_market_from_str("CSI_INDEX"),
+                            code.upper(),
+                            period_map[item.category],
+                            page * page_size,
+                            page_size,
+                        )
                 else:
                     page_df = await client.get_security_bars(
                         market_from_str(market_str),

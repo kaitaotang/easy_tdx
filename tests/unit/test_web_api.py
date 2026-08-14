@@ -94,6 +94,35 @@ def test_deps_get_client_type():
     assert callable(get_client)
 
 
+def test_dataframe_response_cleans_nan_and_inf() -> None:
+    """XDXR 等稀疏表包含 NaN，响应必须清洗成 JSON 的 null。"""
+    import math
+
+    import numpy as np
+    import pandas as pd
+
+    from easy_tdx.web.schemas import DataFrameResponse
+
+    response = DataFrameResponse.from_dataframe(
+        pd.DataFrame(
+            {
+                "fenhong": [np.float64(0.12), np.nan],
+                "peigu": [float("inf"), None],
+            }
+        )
+    )
+
+    assert response.data[0]["fenhong"] == 0.12
+    assert response.data[0]["peigu"] is None
+    assert response.data[1]["fenhong"] is None
+    assert response.data[1]["peigu"] is None
+    assert not any(
+        isinstance(value, float) and not math.isfinite(value)
+        for row in response.data
+        for value in row.values()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task 4: Market Router
 # ---------------------------------------------------------------------------

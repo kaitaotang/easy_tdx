@@ -64,13 +64,33 @@ class BacktestRequest(BaseModel):
     # 数据来源 B：按标的取行情
     symbol: str | None = Field(
         default=None,
-        pattern=r"^(SZ|SH|BJ):\d{6}$",
-        description="标的代码，格式 市场:代码，如 SZ:000001",
+        pattern=r"^(SZ|SH|BJ):(\d{6}|[Hh]\d{5})$",
+        description="标的代码，格式 市场:代码，如 SZ:000001 或 SH:H30269（指数）",
     )
     category: Literal["DAY", "WEEK", "MONTH", "MIN_5", "MIN_15", "MIN_30", "MIN_60"] = Field(
         default="DAY", description="K 线周期"
     )
     count: int = Field(default=250, ge=20, le=2000, description="K 线根数")
+
+    # 可选的除权除息历史。前端单标回测会从 /xdxr 获取并随请求传入；
+    # 内联 OHLCV 调用方没有该数据时，回测仍可正常运行，只是不显示股息率。
+    dividends: list[dict[str, Any]] | None = Field(
+        default=None,
+        max_length=5000,
+        description="历史现金分红记录（date/category/fenhong）",
+    )
+    # ETF 无分红记录时，可传跟踪指数的 K 线，按指数价格计算参考股息率。
+    dividend_bars: list[dict[str, Any]] | None = Field(
+        default=None,
+        max_length=2000,
+        description="可选的股息参考标的 OHLCV（例如 ETF 512890 对应指数 H30269）",
+    )
+    dividend_source: str | None = Field(
+        default=None, max_length=80, description="股息率来源说明",
+    )
+    dividend_yield_pct: float | None = Field(
+        default=None, ge=0, le=100, description="可选的当前参考股息率（百分比）",
+    )
 
     @model_validator(mode="after")
     def _check_data_source(self) -> BacktestRequest:
@@ -211,6 +231,7 @@ class BacktestResultResponse(BaseModel):
     trades: list[dict[str, Any]]
     positions: list[dict[str, Any]]
     config: dict[str, Any]
+    dividend_profile: dict[str, Any] | None = None
 
 
 class TaskSubmitResponse(BaseModel):
@@ -386,7 +407,7 @@ class MultiStrategyItem(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     symbol: str = Field(
         ...,
-        pattern=r"^(?:(?:SZ|SH|BJ):\d{6}|US_STOCK:[A-Za-z]{1,5}|HK_MAIN_BOARD:\d{5})$",
+        pattern=r"^(?:(?:SZ|SH|BJ):(\d{6}|[Hh]\d{5})|US_STOCK:[A-Za-z]{1,5}|HK_MAIN_BOARD:\d{5})$",
         description=(
             '标的完整代码，如 "SH:601088"、"US_STOCK:SCHD" 或 '
             '"HK_MAIN_BOARD:00700"'

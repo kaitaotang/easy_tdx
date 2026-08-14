@@ -99,7 +99,25 @@ class DataFrameResponse(BaseModel):
     @classmethod
     def from_dataframe(cls, df: Any) -> DataFrameResponse:
         """从 pandas DataFrame 构建响应。"""
+        import math
+
         import pandas as pd
+
+        def clean_value(value: Any) -> Any:
+            """递归清洗 numpy 标量及 JSON 不支持的 NaN/Inf。"""
+            if hasattr(value, "item"):
+                value = value.item()
+            if isinstance(value, float) and not math.isfinite(value):
+                return None
+            if value is None:
+                return None
+            if hasattr(value, "isoformat"):
+                return value.isoformat()
+            if isinstance(value, dict):
+                return {str(k): clean_value(v) for k, v in value.items()}
+            if isinstance(value, list | tuple):
+                return [clean_value(v) for v in value]
+            return value
 
         if isinstance(df, pd.DataFrame):
             records = df.to_dict(orient="records")
@@ -108,13 +126,7 @@ class DataFrameResponse(BaseModel):
                 clean_row: dict[str, Any] = {}
                 for k, v in row.items():
                     assert isinstance(k, str)
-                    if hasattr(v, "isoformat"):
-                        clean_row[k] = v.isoformat()
-                    elif hasattr(v, "item"):
-                        # numpy scalar → Python native
-                        clean_row[k] = v.item()
-                    else:
-                        clean_row[k] = v
+                    clean_row[k] = clean_value(v)
                 cleaned.append(clean_row)
             return cls(data=cleaned, count=len(cleaned))
         return cls(data=[], count=0)

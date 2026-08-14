@@ -122,6 +122,8 @@ class BacktestResult:
     positions: pd.DataFrame
     config: dict[str, Any]
     diagnostic: str | None = None
+    # 单标回测的基本面辅助信息；无历史分红且无参考值时为 None。
+    dividend_profile: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """将结果转换为 JSON 兼容字典。
@@ -135,6 +137,7 @@ class BacktestResult:
             "positions": self.positions.to_dict(orient="records"),
             "config": self.config,
             "diagnostic": self.diagnostic,
+            "dividend_profile": self.dividend_profile,
         }
 
     def to_json(self) -> str:

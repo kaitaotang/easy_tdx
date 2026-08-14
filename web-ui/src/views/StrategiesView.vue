@@ -21,7 +21,7 @@ import {
   saveStrategy,
 } from '../api'
 import { gradePortfolio } from '../grading'
-import { detectExMarket, detectMarket, isExMarketCode } from '../market'
+import { detectExMarket, detectMarket, isExMarketCode, isIndexCode } from '../market'
 import type { MultiStrategyItem, Performance, SavedStrategy, Trade } from '../types'
 import { useBacktestStore } from '../stores/backtest'
 
@@ -130,6 +130,7 @@ function normalizeSymbol(raw: string): string {
     const market = detectExMarket(value)
     return `${market}:${market === 'US_STOCK' ? value.toUpperCase() : value}`
   }
+  if (isIndexCode(value)) return `SH:${value.toUpperCase()}`
   return `${detectMarket(value)}:${value}`
 }
 

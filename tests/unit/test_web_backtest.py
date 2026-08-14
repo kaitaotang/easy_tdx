@@ -216,6 +216,14 @@ def test_backtest_request_defaults():
     assert req.count == 250
 
 
+def test_backtest_request_accepts_csi_index_symbol():
+    """中证指数 H30269 可以作为单标回测标的。"""
+    from easy_tdx.web.backtest_schemas import BacktestRequest
+
+    req = BacktestRequest(strategy="ma_cross", symbol="SH:H30269")
+    assert req.symbol == "SH:H30269"
+
+
 # ---------------------------------------------------------------------------
 # 结果序列化
 # ---------------------------------------------------------------------------

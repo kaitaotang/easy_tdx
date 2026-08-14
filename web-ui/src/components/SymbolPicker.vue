@@ -6,8 +6,8 @@
 
 import { computed, ref } from 'vue'
 
-import { fetchBars, fetchExBars, formatError } from '../api'
-import { detectMarket, detectExMarket, isExMarketCode, marketLabel } from '../market'
+import { fetchBars, fetchExBars, fetchIndexBars, formatError } from '../api'
+import { detectMarket, detectExMarket, detectIndexMarket, isExMarketCode, isIndexCode, marketLabel } from '../market'
 import { useBacktestStore } from '../stores/backtest'
 import type { Bar, Category } from '../types'
 
@@ -40,6 +40,7 @@ const CATEGORIES: Category[] = ['DAY', 'WEEK', 'MONTH', 'MIN_5', 'MIN_15', 'MIN_
 const detectedMarket = computed(() => {
   const c = code.value?.trim()
   if (!c) return ''
+  if (isIndexCode(c)) return '中证指数'
   if (isExMarketCode(c)) return marketLabel(detectExMarket(c))
   if (/^\d{6}$/.test(c)) return marketLabel(detectMarket(c))
   return ''
@@ -50,8 +51,8 @@ const detectedMarket = computed(() => {
 async function loadBars(): Promise<boolean> {
   const c = code.value.trim()
   // 基本校验：6位数字(A股) 或 1-5位字母(美股) 或 5位数字(港股)
-  if (!/^\d{6}$/.test(c) && !/^[A-Za-z]{1,5}$/.test(c) && !/^\d{5}$/.test(c)) {
-    error.value = '代码格式无效：A股为6位数字，美股为1-5位字母（如SPY），港股为5位数字'
+  if (!/^\d{6}$/.test(c) && !/^[A-Za-z]{1,5}$/.test(c) && !/^\d{5}$/.test(c) && !isIndexCode(c)) {
+    error.value = '代码格式无效：A股为6位数字，指数为 H+5位数字（如H30269），美股为1-5位字母，港股为5位数字'
     store.error = error.value
     return false
   }
@@ -68,7 +69,11 @@ async function loadBars(): Promise<boolean> {
     let sourceLabel: string
     const range = `${startDate.value} ~ ${endDate.value}`
 
-    if (isExMarketCode(c)) {
+    if (isIndexCode(c)) {
+      const market = detectIndexMarket(c)
+      bars = await fetchIndexBars(market, c, category.value, startDate.value, endDate.value)
+      sourceLabel = `${market}:${c.toUpperCase()} 指数 ${category.value} ${range}`
+    } else if (isExMarketCode(c)) {
       // 美股/港股走扩展市场接口
       const exMarket = detectExMarket(c)
       bars = await fetchExBars(
@@ -120,7 +125,7 @@ defineExpose({ loadBars, loading })
       <input
         v-model="code"
         maxlength="10"
-        placeholder="A股6位数字 / 美股字母(如SPY) / 港股5位数字"
+        placeholder="A股6位数字 / 指数H+5位(如H30269) / 美股字母 / 港股5位数字"
       />
       <span v-if="detectedMarket" class="market-tag">{{ detectedMarket }}</span>
     </div>

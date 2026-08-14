@@ -6,6 +6,7 @@ import type {
   BacktestResult,
   Bar,
   Category,
+  DividendEvent,
   MultiStrategyBacktestRequest,
   OptimizeAllBacktestRequest,
   OptimizeBacktestRequest,
@@ -120,6 +121,85 @@ export async function fetchBars(
     // 否则引擎/图表只正确处理第一页的数据。
     bars.sort((a, b) => a.datetime.localeCompare(b.datetime))
     return bars
+}
+
+/** 按指数代码取 K 线；用于 H30269 等通达信指数代码的单标回测。 */
+export async function fetchIndexBars(
+  market: string,
+  code: string,
+  category: Category,
+  startDate?: string,
+  endDate?: string,
+): Promise<Bar[]> {
+  let allBars: Bar[] = []
+  try {
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const params = new URLSearchParams({
+        market,
+        code: code.toUpperCase(),
+        category,
+        count: '800',
+        start: String(page * 800),
+      })
+      const resp = await fetch(`${BASE}/bars/index?${params}`)
+      if (!resp.ok) await throwError(resp)
+      const body = (await resp.json()) as { data: Record<string, unknown>[] }
+      const pageBars = body.data.map((row) => normalizeBar(row))
+      if (pageBars.length === 0) break
+      allBars = allBars.concat(pageBars)
+
+      if (startDate) {
+        const oldest = pageBars[pageBars.length - 1].datetime.slice(0, 10)
+        if (oldest <= startDate) break
+      }
+      if (pageBars.length < 800) break
+    }
+  } catch (error) {
+    // 标准 TDX 指数表没有 H 开头中证指数时，交给启用的扩展市场客户端。
+    if (!/^H\d{5}$/i.test(code)) throw error
+  }
+
+  // 少数 H 开头中证指数不在标准指数行情表，启用扩展市场时回退 CSI_INDEX。
+  if (allBars.length === 0 && /^H\d{5}$/i.test(code)) {
+    return fetchExBars('CSI_INDEX', code, category, startDate, endDate)
+  }
+
+  let bars = allBars
+  if (startDate) bars = bars.filter((b) => b.datetime.slice(0, 10) >= startDate)
+  if (endDate) bars = bars.filter((b) => b.datetime.slice(0, 10) <= endDate)
+  bars.sort((a, b) => a.datetime.localeCompare(b.datetime))
+  return bars
+}
+
+/** 获取 A 股除权除息历史；失败由调用方降级为无股息率展示。 */
+export async function fetchDividendEvents(market: string, code: string): Promise<DividendEvent[]> {
+  const params = new URLSearchParams({ market, code })
+  const resp = await fetch(`${BASE}/xdxr?${params}`)
+  if (!resp.ok) await throwError(resp)
+  const body = (await resp.json()) as { data: Record<string, unknown>[] }
+  return body.data.map((row) => ({
+    date: row.date as string | undefined,
+    category: row.category == null ? undefined : Number(row.category),
+    fenhong: row.fenhong == null ? null : Number(row.fenhong),
+    songzhuangu: row.songzhuangu == null ? null : Number(row.songzhuangu),
+    peigu: row.peigu == null ? null : Number(row.peigu),
+  }))
+}
+
+/** 获取 MAC 行情源的当前股息率（百分比），例如 CSI_INDEX:H30269。 */
+export async function fetchCurrentDividendYield(
+  market: string,
+  code: string,
+): Promise<number | null> {
+  const params = new URLSearchParams({ market, code: code.toUpperCase() })
+  const resp = await fetch(`${BASE}/mac/dividend-yield?${params}`)
+  if (!resp.ok) await throwError(resp)
+  const body = (await resp.json()) as { data: Record<string, unknown>[] }
+  const value = body.data?.[0]?.dividend_yield_rate
+  const result = value == null ? NaN : Number(value)
+  // 该字段在指数/未覆盖标的上常以 0 填充，0 代表“没有数据”而不是
+  // 可验证的零股息率，不能展示成 0.00%。
+  return Number.isFinite(result) && result > 0 ? result : null
 }
 
 /**

@@ -34,6 +34,11 @@ def get_mac_client_optional(request: Request) -> Any | None:
     return request.app.state.mac_client
 
 
+def get_optional_mac_client(request: Request) -> Any | None:
+    """返回可选 MAC 客户端，供可降级的辅助行情接口使用。"""
+    return get_mac_client_optional(request)
+
+
 def get_ex_client(request: Request) -> Any:
     """从 app.state 获取共享的 AsyncExTdxClient 实例（可选）。"""
     client: Any | None = request.app.state.ex_client

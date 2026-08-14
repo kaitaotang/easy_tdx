@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pandas as pd
 from fastapi import APIRouter, Depends, Query
 
 from easy_tdx.web.convert import (
@@ -13,7 +14,7 @@ from easy_tdx.web.convert import (
     sort_order_from_str,
     sort_type_from_str,
 )
-from easy_tdx.web.deps import get_mac_client
+from easy_tdx.web.deps import get_mac_client, get_optional_ex_client, get_optional_mac_client
 from easy_tdx.web.schemas import DataFrameResponse
 
 router = APIRouter(tags=["mac-quotes"])
@@ -21,6 +22,52 @@ router = APIRouter(tags=["mac-quotes"])
 
 def _df_resp(df: Any) -> DataFrameResponse:
     return DataFrameResponse.from_dataframe(df)
+
+
+@router.get("/mac/dividend-yield", response_model=DataFrameResponse)
+async def dividend_yield(
+    market: str = Query(..., description="MAC 市场编号或名称，如 SH/CSI_INDEX"),
+    code: str = Query(..., min_length=6, max_length=6),
+    client: Any | None = Depends(get_optional_mac_client),
+    ex_client: Any | None = Depends(get_optional_ex_client),
+) -> DataFrameResponse:
+    """获取行情源当前股息率（可用于 ETF 跟踪指数的参考值）。"""
+    from easy_tdx.codec.bitmap import FieldBit
+
+    is_ex_market = market.upper() not in {"SZ", "SH", "BJ"}
+    if not is_ex_market:
+        market_value = market_value_from_str(market)
+    else:
+        from easy_tdx.web.convert import ex_market_from_str
+
+        market_value = ex_market_from_str(market) if not market.isdigit() else int(market)
+    # CSI_INDEX/H30269 等扩展市场必须使用 MAC 扩展客户端。普通 MAC
+    # 客户端接受任意整数市场号，可能返回一行“字段全为 0”的假成功结果，
+    # 因而不能把它当成有效股息率。
+    if is_ex_market:
+        df = None
+    else:
+        try:
+            if client is None:
+                raise RuntimeError("MAC 客户端未连接")
+            df = await client.get_stock_quotes(
+                [(market_value, code.upper())], fields=FieldBit.DIVIDEND_YIELD_RATE
+            )
+        except Exception:
+            df = None
+    if (df is None or df.empty) and ex_client is not None:
+        df = await ex_client.goods_quotes(
+            [(market_value, code.upper())], fields=FieldBit.DIVIDEND_YIELD_RATE
+        )
+    if df is None or df.empty:
+        return DataFrameResponse(data=[], count=0)
+    # 0、NaN、负数表示字段缺失/未覆盖，不是“股息率为 0%”。
+    field = "dividend_yield_rate"
+    if field in df.columns:
+        value = pd.to_numeric(df[field], errors="coerce")
+        if value.empty or not bool((value > 0).any()):
+            return DataFrameResponse(data=[], count=0)
+    return _df_resp(df)
 
 
 @router.get("/mac/quote-list", response_model=DataFrameResponse)
