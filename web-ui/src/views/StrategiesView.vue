@@ -432,6 +432,18 @@ interface Holding {
   unrealizedPnl: number // 未实现盈亏（元）
   unrealizedPct: number // 未实现收益率
   holding: boolean // 是否在持仓中
+  tradeAction: '买入' | '卖出' // 当前状态对应的最近一次有效成交方向
+  tradeTime: string // 持有=最近买入时间，空仓=最近卖出时间
+}
+
+/** 把后端可能返回的 ISO 时间或 YYYYMMDD 统一成适合表格展示的时间。 */
+function formatTradeTime(value: unknown): string {
+  if (value == null) return ''
+  const raw = String(value).trim()
+  if (/^\d{8}$/.test(raw)) {
+    return `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}`
+  }
+  return raw.replace('T', ' ').replace(/Z$/, '').slice(0, raw.includes('T') ? 16 : 10)
 }
 
 const holdings = computed<Holding[]>(() => {
@@ -447,6 +459,12 @@ const holdings = computed<Holding[]>(() => {
     const marketValue = Number(last.market_value ?? 0)
     const unrealizedPnl = Number(last.unrealized_pnl ?? 0)
     const [strategyLabel, symbol] = key.split('@')
+    const holding = size > 0.5 // 容忍浮点误差
+    const tradeAction = holding ? '买入' : '卖出'
+    const trades = Array.isArray(br.trades) ? br.trades : []
+    const latestTrade = [...trades]
+      .reverse()
+      .find((trade) => !trade.rejected && trade.direction === (holding ? 'BUY' : 'SELL'))
     out.push({
       key,
       strategyLabel: strategyLabel || key,
@@ -456,7 +474,9 @@ const holdings = computed<Holding[]>(() => {
       marketValue,
       unrealizedPnl,
       unrealizedPct: avgPrice > 0 ? unrealizedPnl / (avgPrice * Math.abs(size)) : 0,
-      holding: size > 0.5, // 容忍浮点误差
+      holding,
+      tradeAction,
+      tradeTime: formatTradeTime(latestTrade?.datetime),
     })
   }
   return out
@@ -1002,6 +1022,7 @@ const comboGrade = computed(() =>
                   <th>策略</th>
                   <th>标的</th>
                   <th>当前状态</th>
+                  <th>买入/卖出时间</th>
                   <th class="num">持仓数量</th>
                   <th class="num">成本价</th>
                   <th class="num">市值</th>
@@ -1014,6 +1035,15 @@ const comboGrade = computed(() =>
                   <td class="strategy-name">{{ h.strategyLabel }}</td>
                   <td class="sym">{{ h.symbol }}</td>
                   <td><span class="status-tag" :class="h.statusClass">{{ h.statusLabel }}</span></td>
+                  <td class="trade-time">
+                    <template v-if="h.tradeTime">
+                      <span class="trade-action" :class="h.holding ? 'buy' : 'sell'">
+                        {{ h.tradeAction }}
+                      </span>
+                      <time>{{ h.tradeTime }}</time>
+                    </template>
+                    <span v-else>-</span>
+                  </td>
                   <td class="num">{{ h.size > 0 ? h.size.toFixed(0) : '-' }}</td>
                   <td class="num">{{ h.holding ? h.avgPrice.toFixed(2) : '-' }}</td>
                   <td class="num">{{ h.holding ? h.marketValue.toFixed(0) : '-' }}</td>
@@ -2179,6 +2209,18 @@ const comboGrade = computed(() =>
   color: #dfe4ea;
   font-weight: 600;
 }
+.trade-time {
+  color: #aeb7c4;
+  font-family: var(--font-mono);
+}
+.trade-action {
+  margin-right: 6px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+}
+.trade-action.buy { color: #ff777b; }
+.trade-action.sell { color: #58c98b; }
 .holdings-table tr.cleared { opacity: 0.54; }
 .status-tag {
   display: inline-flex;
